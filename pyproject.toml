@@ -33,7 +33,8 @@ Homepage = "https://github.com/joruf/claude-privacy-check"
 Issues = "https://github.com/joruf/claude-privacy-check/issues"
 
 [tool.setuptools]
-packages = ["claude_privacy_check"]
+packages = ["claude_privacy_check", "claude_privacy_check.icons"]
 
 [tool.setuptools.package-data]
 claude_privacy_check = ["locales/*.json"]
+"claude_privacy_check.icons" = ["*.png", "*.svg"]

@@ -8,6 +8,7 @@ import os
 import sys
 
 from . import about, core, data, instructions, observer, watch
+from . import license as licence
 from .i18n import (apply_startup_language, available_languages, current_language,
                    save_preference, t)
 
@@ -96,6 +97,27 @@ def list_data(as_json):
     return 0
 
 
+def show_license(as_json):
+    report = licence.build_report()
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+        return 0
+
+    print(paint(t(licence.verdict_key(report)),
+                "OK" if report["present"] and report.get("token_state") != "expired"
+                else "CRITICAL" if report.get("token_state") == "expired"
+                else "HIGH"))
+    print()
+    for section in report["sections"]:
+        print(paint(f"── {section['title']} ──", "INFO"))
+        print(f"  {section['summary']}")
+        for row in section["rows"]:
+            print(f"  {row['label']}: {row['value']}")
+        print()
+    print(paint(t("license.raw_hint"), "INFO"))
+    return 0 if report["present"] else 1
+
+
 def show_observer(as_json):
     report = observer.build_report()
     if as_json:
@@ -103,8 +125,7 @@ def show_observer(as_json):
         return 0
 
     account = report["account"]
-    plan = {"claude_team": t("plan.team"), "claude_enterprise": t("plan.enterprise")}.get(
-        account.get("organizationType"), account.get("organizationType", "—"))
+    plan = core.plan_label(account)
     print(paint(t("observer.intro"), "INFO"))
     print()
     print(paint(f"── {t('observer.section.identity')} ──", "INFO"))
@@ -233,8 +254,10 @@ def build_parser(lang_codes):
     p.add_argument("--language", "--lang", dest="language", choices=lang_codes,
                    help=t("cli.help.language"))
     p.add_argument("--gui", action="store_true", help=t("cli.help.gui"))
+    p.add_argument("--cli", action="store_true", help=t("cli.help.cli"))
     p.add_argument("--about", action="store_true", help=t("cli.help.about"))
     p.add_argument("--data", action="store_true", help=t("cli.help.data_view"))
+    p.add_argument("--license", action="store_true", help=t("cli.help.license"))
     p.add_argument("--init", action="store_true", help=t("cli.help.init"))
     p.add_argument("--show", action="store_true", help=t("cli.help.show"))
     p.add_argument("--json", action="store_true", help=t("cli.help.json"))
@@ -257,7 +280,30 @@ def build_parser(lang_codes):
     p.add_argument("--watch-status", action="store_true", help=t("cli.help.watch_status"))
     p.add_argument("--interval", type=int, default=15, metavar="MINUTES",
                    help=t("cli.help.interval"))
+    p.add_argument("--setup", action="store_true", help=t("cli.help.setup"))
+    p.add_argument("--setup-uninstall", action="store_true",
+                   help=t("cli.help.setup_uninstall"))
     return p
+
+
+def _wants_gui(args):
+    """GUI is the default; --cli and other terminal actions stay headless."""
+    if args.gui:
+        return True
+    if args.cli:
+        return False
+    if args.about or args.init or args.show or args.json or args.quiet:
+        return False
+    if args.list_data or args.delete or args.notify:
+        return False
+    if args.watch_install or args.watch_uninstall or args.watch_status:
+        return False
+    if args.setup or args.setup_uninstall:
+        return False
+    if args.project is not None:
+        return False
+    # bare launch, --language, --data / --license / --observer / --instructions → window
+    return True
 
 
 def main(argv=None):
@@ -285,11 +331,22 @@ def main(argv=None):
     if args.about:
         print(about.build_about_text())
         return 0
-    if args.gui:
+    if args.setup_uninstall:
+        from . import install as app_install
+        app_install.uninstall(progress=print)
+        return 0
+    if args.setup:
+        from . import install as app_install
+        app_install.ensure(progress=print, force=True)
+        return 0
+    if _wants_gui(args):
         from .gui import run as run_gui
         return run_gui("data" if args.data else
+                       "license" if args.license else
                        "observer" if args.observer else
                        "instructions" if args.instructions else "check")
+    if args.license:
+        return show_license(args.json)
     if args.list_data:
         return list_data(args.json)
     if args.observer:

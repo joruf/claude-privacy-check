@@ -1,7 +1,9 @@
 # Claude Privacy Check
 
 Claude Privacy Check tells you whether your organisation is capturing Claude Code
-prompts on your machine — and lets you delete the local history selectively.
+prompts on your machine — and lets you delete the local history selectively. It
+also reports whether a usable Claude.ai subscription, API key or cloud-provider
+auth is present so Claude Code can run at all.
 
 Under a company Team or Enterprise seat your Claude account belongs to the
 organisation. Capturing prompt **content** while you work, though, needs
@@ -43,14 +45,15 @@ claude-privacy-check --init
 
 `install.sh` needs no root and installs nothing system-wide. It puts a symlink in
 `~/.local/bin`, adds a menu entry, and checks that Python 3.10+ and Tkinter are
-present. `--init` records the current state as the reference point — do that
-while you still trust the machine.
+present. Starting `run.py` also checks this and finishes anything still missing —
+the window shows each install step as it runs. `--init` records the current state
+as the reference point — do that while you still trust the machine.
 
 Without installing anything:
 
 ```bash
 python3 run.py --init
-python3 run.py --gui
+python3 run.py
 ```
 
 As a package, if you prefer pip:
@@ -192,7 +195,10 @@ sitting. A genuinely new finding still notifies, because it is new information.
 ## Command line
 
 ```bash
-claude-privacy-check                 # check against the baseline
+claude-privacy-check                 # graphical interface (default)
+claude-privacy-check --license       # GUI: licence / subscription details
+claude-privacy-check --cli --license # same, in the terminal
+claude-privacy-check --cli           # check against the baseline (terminal)
 claude-privacy-check --quiet         # findings of MEDIUM and above only
 claude-privacy-check --show          # assess only, do not compare
 claude-privacy-check --json          # machine-readable
@@ -200,11 +206,12 @@ claude-privacy-check --init          # record a new baseline (overwrites!)
 
 claude-privacy-check --list-data     # local history inventory
 claude-privacy-check --delete PATH   # delete below ~/.claude, asks first
-claude-privacy-check --observer      # what a triage would surface
-claude-privacy-check --instructions  # instruction files loaded into sessions
+claude-privacy-check --cli --observer      # triage summary (terminal)
+claude-privacy-check --cli --instructions  # instruction files (terminal)
 
-claude-privacy-check --gui           # window; add --data, --observer or
-                                     # --instructions to open that view
+claude-privacy-check --data          # GUI: local data view
+claude-privacy-check --observer      # GUI: observer view
+claude-privacy-check --instructions  # GUI: instructions view
 claude-privacy-check --language de   # switch language, remembered
 claude-privacy-check --about
 ```
@@ -240,6 +247,7 @@ claude_privacy_check/
 ├── watch.py                      notification and systemd units
 ├── cli.py                        command line
 ├── gui.py                        Tkinter (imported only when needed)
+├── icons/                        app icon (PNG + SVG)
 ├── about.py                      version, author, links
 ├── i18n.py                       translation layer
 └── locales/{en,de}.json
@@ -249,8 +257,8 @@ packaging/                        desktop entry
 
 Findings carry a translation key plus parameters rather than finished text, so
 one result object renders in any language. `gui.py` is the only module that
-imports Tkinter, and only `--gui` loads it — the command line keeps working where
-`python3-tk` is absent.
+imports Tkinter, and only the GUI path loads it — `--cli` and the other
+command-line actions keep working where `python3-tk` is absent.
 
 ## Tests
 

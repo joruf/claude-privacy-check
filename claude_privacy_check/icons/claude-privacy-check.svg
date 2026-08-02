@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Claude Privacy Check">
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#0f9b9b"/>
+  <path fill="#ffffff" d="M128 48 L206 66 L206 143 L128 218 L50 143 L50 66 Z"/>
+  <path fill="#0f9b9b" d="M128 58 L194 73 L194 140 L128 204 L62 140 L62 73 Z"/>
+  <path fill="none" stroke="#ffffff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"
+        d="M86 136 L120 170 L176 110"/>
+</svg>

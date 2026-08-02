@@ -1,9 +1,11 @@
 """Graphical interface.
 
-Three views:
+Views:
   Check          assessment and deviation from the baseline
+  Licence        subscription / auth details readable from this machine
   Local data     inventory of the local history with per-entry deletion
   Observer view  what a mechanical triage over that data would surface
+  Instructions   instruction files loaded into sessions
 
 Meant for launching from a menu entry or by double-click, where terminal output
 would vanish immediately. Tkinter is imported here and nowhere else, so the CLI
@@ -22,9 +24,18 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox
 
-from . import about, core, data, instructions, observer
+from . import about, core, data, instructions, license as licence, observer
+from .icons import SIZES, icon_png
 from .i18n import (available_languages, current_language, save_preference,
                    set_language, t)
+
+NAV_TABS = (
+    ("check", "nav.check"),
+    ("license", "nav.license"),
+    ("data", "nav.data"),
+    ("observer", "nav.observer"),
+    ("instructions", "nav.instructions"),
+)
 
 LIGHT = {
     "bg": "#f2f3f5", "card": "#ffffff", "border": "#dcdfe3",
@@ -71,7 +82,9 @@ class App:
         self.data = None
         self.report = None
         self.rules = None
+        self.license = None
         self.opened = set()   # instruction files with the body unfolded
+        self.license_open = set()  # licence sections with details unfolded
         self.view = start_view
         self.expanded = set()        # projects with the session list unfolded
         self.wrappable = []          # labels whose wraplength follows resizing
@@ -91,6 +104,7 @@ class App:
         root.geometry("880x680")
         root.minsize(700, 480)
         root.configure(bg=self.c["bg"])
+        self._set_window_icon()
 
         self.lang_var = tk.StringVar(value=current_language())
         self._build_menu()
@@ -107,7 +121,90 @@ class App:
         root.bind("<End>", lambda _e: self.canvas.yview_moveto(1))
         root.bind("<Down>", lambda _e: self.canvas.yview_scroll(3, "units"))
         root.bind("<Up>", lambda _e: self.canvas.yview_scroll(-3, "units"))
-        root.after(80, lambda: self.switch(self.view))
+
+        from . import install as app_install
+        pending = app_install.take_gui_pending()
+        if pending:
+            self._start_with_install(pending)
+        else:
+            root.after(80, lambda: self.switch(self.view))
+
+    def _set_window_icon(self):
+        """Taskbar / window decoration: prefer several sizes for the WM."""
+        photos = []
+        for size in SIZES:
+            path = icon_png(size)
+            if path:
+                try:
+                    photos.append(tk.PhotoImage(file=path))
+                except tk.TclError:
+                    continue
+        if not photos:
+            return
+        self.root.iconphoto(True, *photos)
+        self._icon_photos = photos  # keep references alive
+
+    def _start_with_install(self, pending):
+        """Show a setup panel and run missing install steps with live status."""
+        self.busy = True
+        self.chip.configure(text=f"  {t('install.chip')}  ", bg=self.c["accent"])
+        self.status_line.configure(text=t("install.status"))
+        self.subtitle.configure(text=t("install.subtitle",
+                                       count=len(pending)))
+        self.btn_refresh.configure(state="disabled")
+        self.btn_baseline.configure(state="disabled")
+
+        self._clear_body()
+        self._section(t("install.section"))
+        card = self._card()
+        self._install_log = tk.Label(
+            card, text=t("install.progress.start"), font=self.f_body,
+            bg=self.c["card"], fg=self.c["fg"], anchor="w", justify="left")
+        self._install_log.pack(fill="x", padx=14, pady=(12, 4))
+        self._install_detail = tk.Label(
+            card, text="", font=self.f_small, bg=self.c["card"],
+            fg=self.c["muted"], anchor="w", justify="left")
+        self._install_detail.pack(fill="x", padx=14, pady=(0, 12))
+        self.wrappable.append((self._install_log, 40))
+        self.wrappable.append((self._install_detail, 40))
+        self.foot_note.configure(text=t("install.footer"))
+
+        lines = []
+
+        def on_progress(message):
+            lines.append(message)
+            text = "\n".join(f"• {line}" for line in lines)
+
+            def update():
+                self._install_detail.configure(text=text)
+                self._install_log.configure(text=message)
+                self.status_line.configure(text=message)
+
+            self.root.after(0, update)
+
+        def work():
+            from . import install as app_install
+            error = None
+            try:
+                app_install.ensure(progress=on_progress)
+            except Exception as exc:  # noqa: BLE001 -- shown in the UI
+                error = exc
+            self.root.after(0, lambda: self._install_done(error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _install_done(self, error):
+        self.busy = False
+        self.btn_refresh.configure(state="normal")
+        if error is not None:
+            self.chip.configure(text=f"  {t('status.error')}  ", bg=self.c["CRITICAL"])
+            self.status_line.configure(text=str(error))
+            messagebox.showerror(t("app.title"),
+                                 t("install.failed", error=error))
+        else:
+            self.chip.configure(text=f"  {t('install.chip_done')}  ", bg=self.c["OK"])
+            self.status_line.configure(text=t("install.progress.done"))
+        self.switch(self.view)
 
     # ----------------------------------------------------------- structure
 
@@ -126,6 +223,8 @@ class App:
 
         view_menu = tk.Menu(bar, tearoff=0)
         view_menu.add_command(label=t("nav.check"), command=lambda: self.switch("check"))
+        view_menu.add_command(label=t("nav.license"),
+                              command=lambda: self.switch("license"))
         view_menu.add_command(label=t("nav.data"), command=lambda: self.switch("data"))
         view_menu.add_command(label=t("nav.observer"),
                               command=lambda: self.switch("observer"))
@@ -185,9 +284,7 @@ class App:
         row.pack(fill="x", padx=20, pady=(0, 12))
 
         self.tabs = {}
-        for key, label_key in (("check", "nav.check"), ("data", "nav.data"),
-                               ("observer", "nav.observer"),
-                               ("instructions", "nav.instructions")):
+        for key, label_key in NAV_TABS:
             btn = tk.Label(row, text=t(label_key), font=self.f_head, padx=14, pady=6,
                            cursor="hand2", bg=self.c["card"], fg=self.c["muted"])
             btn.pack(side="left", padx=(0, 6))
@@ -268,9 +365,7 @@ class App:
         self._build_menu()
         self.root.title(t("app.title"))
         self.title_label.configure(text=t("app.title"))
-        for key, label_key in (("check", "nav.check"), ("data", "nav.data"),
-                               ("observer", "nav.observer"),
-                               ("instructions", "nav.instructions")):
+        for key, label_key in NAV_TABS:
             self.tabs[key].configure(text=t(label_key))
         self.btn_baseline.configure(text=t("btn.set_baseline"))
         self.btn_json.configure(text=t("btn.copy_json"))
@@ -399,6 +494,114 @@ class App:
             self.wrappable.append((val, 190))
         tk.Frame(card, bg=self.c["card"], height=8).pack()
 
+    # ------------------------------------------------------ view: license
+
+    def render_license(self):
+        self._clear_body()
+        report = self.license
+        if report is None:
+            return
+
+        present = report["present"]
+        if report.get("token_state") == "expired":
+            tone, chip = "CRITICAL", "expired"
+        elif present:
+            tone, chip = "OK", "ok"
+        else:
+            tone, chip = "HIGH", "none"
+        self.chip.configure(text=f"  {t('license.chip.' + chip)}  ", bg=self.c[tone])
+        self.status_line.configure(text=t(licence.verdict_key(report)))
+        self.subtitle.configure(
+            text=self._account_line(report["account"], report.get("auth")) + "\n"
+            + t("license.subtitle"))
+
+        if not present:
+            self._note_card(t("license.empty"))
+
+        for section in report["sections"]:
+            self._section(section["title"])
+            self._license_section_card(section)
+
+        self._section(t("license.section.raw"))
+        self._note_card(t("license.raw_hint"))
+        tk.Frame(self.body, bg=self.c["bg"], height=12).pack()
+
+    def _license_section_card(self, section):
+        card = self._card()
+        top = tk.Frame(card, bg=self.c["card"])
+        top.pack(fill="x", padx=14, pady=(12, 6))
+        tk.Label(top, text=section["summary"], font=self.f_head, bg=self.c["card"],
+                 fg=self.c["fg"], anchor="w").pack(side="left", fill="x", expand=True)
+        open_ = section["id"] in self.license_open
+        btn = self._button(
+            top,
+            t("btn.hide_details") if open_ else t("btn.show_details"),
+            lambda s=section["id"]: self._toggle_license_section(s))
+        btn.pack(side="right", padx=(12, 0))
+
+        if not open_:
+            preview = [r for r in section["rows"]
+                       if r["raw"] not in (None, "", [], False)][:3]
+            if not preview:
+                preview = section["rows"][:2]
+            for row in preview:
+                line = tk.Frame(card, bg=self.c["card"])
+                line.pack(fill="x", padx=14, pady=1)
+                tk.Label(line, text=row["label"], font=self.f_small, bg=self.c["card"],
+                         fg=self.c["muted"], width=22, anchor="w").pack(side="left")
+                val = tk.Label(line, text=row["value"], font=self.f_small,
+                               bg=self.c["card"], fg=self.c["fg"], anchor="w",
+                               justify="left")
+                val.pack(side="left", fill="x", expand=True)
+                self.wrappable.append((val, 260))
+            tk.Frame(card, bg=self.c["card"], height=10).pack()
+            return
+
+        box = tk.Frame(card, bg=self.c["code_bg"])
+        box.pack(fill="x", padx=14, pady=(4, 12))
+        for row in section["rows"]:
+            line = tk.Frame(box, bg=self.c["code_bg"])
+            line.pack(fill="x", padx=8, pady=2)
+            tk.Label(line, text=row["label"], font=self.f_small, bg=self.c["code_bg"],
+                     fg=self.c["muted"], width=22, anchor="w").pack(side="left")
+            val = tk.Label(line, text=row["value"], font=self.f_mono,
+                           bg=self.c["code_bg"], fg=self.c["fg"], anchor="w",
+                           justify="left")
+            val.pack(side="left", fill="x", expand=True)
+            self.wrappable.append((val, 260))
+
+    def _toggle_license_section(self, section_id):
+        if section_id in self.license_open:
+            self.license_open.discard(section_id)
+        else:
+            self.license_open.add(section_id)
+        self.render_license()
+
+    def reload_license(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
+        self.btn_refresh.configure(state="disabled")
+
+        def work():
+            try:
+                payload, error = licence.build_report(), None
+            except Exception as exc:  # noqa: BLE001 -- surfaced in the UI
+                payload, error = None, exc
+            self.root.after(0, lambda: self._license_done(payload, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _license_done(self, report, error):
+        self.busy = False
+        self.btn_refresh.configure(state="normal")
+        if error is not None:
+            messagebox.showerror(t("app.title"), t("error.license_failed", error=error))
+            return
+        self.license = report
+        self.render_license()
+
     # --------------------------------------------------------- view: data
 
     def render_data(self):
@@ -412,7 +615,8 @@ class App:
         self.status_line.configure(text=t("data.status_line"))
         if self.result is None:      # started directly in this view
             account, _mcp = core.collect_account_and_mcp()
-            self.subtitle.configure(text=self._account_line(account)
+            auth = core.collect_auth()
+            self.subtitle.configure(text=self._account_line(account, auth)
                                     + "\n" + t("data.subtitle"))
 
         self._section(t("section.transcripts"),
@@ -530,17 +734,16 @@ class App:
                "MEDIUM" if verdict.endswith("mentions") else "OK"
         self.chip.configure(text=f"  {t('observer.chip')}  ", bg=self.c[tone])
         self.status_line.configure(text=t(verdict))
-        self.subtitle.configure(text=self._account_line(report["account"]) + "\n"
-                                + t("observer.pattern.line",
-                                    sessions=report["sessions"],
-                                    days=report["active_days"],
-                                    size=data.human_bytes(report["bytes"])))
+        self.subtitle.configure(
+            text=self._account_line(report["account"], core.collect_auth()) + "\n"
+            + t("observer.pattern.line",
+                sessions=report["sessions"],
+                days=report["active_days"],
+                size=data.human_bytes(report["bytes"])))
 
         self._section(t("observer.section.identity"))
         account = report["account"]
-        plan = {"claude_team": t("plan.team"),
-                "claude_enterprise": t("plan.enterprise")}.get(
-                    account.get("organizationType"), "—")
+        plan = core.plan_label(account)
         self._note_card(
             t("observer.identity.line", org=account.get("organizationName", "—"),
               plan=plan, role=account.get("organizationRole", "—"),
@@ -657,7 +860,8 @@ class App:
         self.status_line.configure(text=" ".join(warnings))
         if self.result is None:      # started directly in this view
             account, _mcp = core.collect_account_and_mcp()
-            self.subtitle.configure(text=self._account_line(account) + "\n"
+            auth = core.collect_auth()
+            self.subtitle.configure(text=self._account_line(account, auth) + "\n"
                                     + t("instructions.intro")[:110] + "…")
 
         if not report["entries"]:
@@ -750,12 +954,12 @@ class App:
 
     # ------------------------------------------------------------- actions
 
-    def _account_line(self, account):
-        plan = {"claude_team": t("plan.team"),
-                "claude_enterprise": t("plan.enterprise")}.get(
-                    account.get("organizationType"),
-                    account.get("organizationType", "—"))
-        return t("header.account", org=account.get("organizationName", "—"), plan=plan,
+    def _account_line(self, account, auth=None):
+        org = (account.get("organizationName")
+               or account.get("emailAddress")
+               or account.get("displayName")
+               or "—")
+        return t("header.account", org=org, plan=core.plan_label(account, auth),
                  role=account.get("organizationRole", "—"))
 
     def switch(self, view):
@@ -767,6 +971,7 @@ class App:
         self.btn_baseline.configure(state="normal" if view == "check" else "disabled")
         self.foot_note.configure(
             text=t("caveat.server_export") if view == "check"
+            else t("license.intro") if view == "license"
             else t("observer.intro") if view == "observer"
             else t("instructions.intro") if view == "instructions"
             else t("delete.note"))
@@ -775,6 +980,8 @@ class App:
         self.btn_baseline.configure(state="normal" if view == "check" else "disabled")
         if view == "data":
             self.reload_data() if self.data is None else self.render_data()
+        elif view == "license":
+            self.reload_license() if self.license is None else self.render_license()
         elif view == "observer":
             self.reload_observer() if self.report is None else self.render_observer()
         elif view == "instructions":
@@ -786,6 +993,10 @@ class App:
     def refresh(self):
         if self.view == "data":
             self.reload_data()
+            return
+        if self.view == "license":
+            self.license = None
+            self.reload_license()
             return
         if self.view == "observer":
             self.report = None
@@ -822,7 +1033,7 @@ class App:
         self.result = result
         snapshot = result["snapshot"]
         self.subtitle.configure(
-            text=self._account_line(snapshot["account"]) + "\n"
+            text=self._account_line(snapshot["account"], snapshot.get("auth")) + "\n"
             + t("header.baseline", time=result["baseline_time"] or t("value.none"),
                 projects=", ".join(snapshot["project_dirs"]) or "—"))
         if self.view == "check":
@@ -979,9 +1190,9 @@ class App:
         dialog.grab_set()
 
     def copy_json(self):
-        payload = ({"check": self.result, "data": self.data,
+        payload = ({"check": self.result, "license": self.license, "data": self.data,
                     "observer": self.report,
-                    "instructions": self.rules}[self.view])
+                    "instructions": self.rules}.get(self.view))
         if payload is None:
             return
         self.root.clipboard_clear()
