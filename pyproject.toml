@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-privacy-check"
+version = "1.0.0"
+description = "Detects client-side monitoring of Claude Code and deletes the local history selectively"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Joachim Ruf" }]
+keywords = ["claude", "claude-code", "privacy", "monitoring", "telemetry", "gdpr"]
+classifiers = [
+  "Environment :: X11 Applications",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+# Deliberately empty: the tool must run on a locked-down work machine where pip
+# is unavailable. The graphical interface needs Tkinter, which ships with
+# CPython on most distributions (Debian/Ubuntu: python3-tk); the command line
+# works without it.
+dependencies = []
+
+[project.scripts]
+claude-privacy-check = "claude_privacy_check.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/joruf/claude-privacy-check"
+Issues = "https://github.com/joruf/claude-privacy-check/issues"
+
+[tool.setuptools]
+packages = ["claude_privacy_check"]
+
+[tool.setuptools.package-data]
+claude_privacy_check = ["locales/*.json"]
