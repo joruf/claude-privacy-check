@@ -1,0 +1,15 @@
+# Local state — contains the machine's own paths and is not shareable.
+data/
+*.egg-info/
+build/
+dist/
+
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+
+*.swp
+*~
+.DS_Store
