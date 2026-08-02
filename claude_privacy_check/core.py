@@ -90,15 +90,16 @@ WATCH_ENV_EXACT = {
     "CLAUDE_CODE_CLIENT_CERT", "CLAUDE_CODE_CLIENT_KEY",
     "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE", "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "NODE_EXTRA_CA_CERTS",
+    "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_OAUTH_TOKEN",
+    "NODE_EXTRA_CA_CERTS",
     "NODE_OPTIONS", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "all_proxy",
 }
 WATCH_ENV_PREFIX = ("OTEL_", "CLAUDE_CODE_OTEL_")
 
 # Values that may be secrets -- store presence and a digest only.
-SECRET_ENV = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OTEL_EXPORTER_OTLP_HEADERS",
-              "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE"}
+SECRET_ENV = {"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+              "OTEL_EXPORTER_OTLP_HEADERS", "CLAUDE_CODE_CLIENT_KEY_PASSPHRASE"}
 
 # Content logging: these variables capture actual prompts and responses.
 CONTENT_LOGGING = [
@@ -119,6 +120,15 @@ PROFILE_PATTERN = re.compile(
     r"NODE_EXTRA_CA_CERTS|CLAUDE_CODE_CLIENT_", re.I)
 
 SEV_ORDER = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "INFO": 0}
+
+# Claude.ai subscription / organisation type → translation key for the plan name.
+PLAN_KEYS = {
+    "pro": "plan.pro", "claude_pro": "plan.pro",
+    "max": "plan.max", "claude_max": "plan.max",
+    "team": "plan.team", "claude_team": "plan.team",
+    "enterprise": "plan.enterprise", "claude_enterprise": "plan.enterprise",
+}
+PAID_SUBSCRIPTIONS = frozenset({"pro", "max", "team", "enterprise"})
 
 # Fields that change on every run or merely describe the scope of collection --
 # never a finding. local_history grows with every session and is display-only.
@@ -233,7 +243,8 @@ def collect_account_and_mcp():
         return {"error": "unreadable"}, {}
     oauth = data.get("oauthAccount") or {}
     for key in ("organizationUuid", "organizationName", "organizationType",
-                "organizationRole", "workspaceRole", "seatTier", "emailAddress"):
+                "organizationRole", "workspaceRole", "seatTier", "emailAddress",
+                "billingType", "hasExtraUsageEnabled", "accountUuid", "displayName"):
         if key in oauth:
             account[key] = oauth[key]
     if data.get("mcpServers"):
@@ -243,6 +254,102 @@ def collect_account_and_mcp():
         if servers:
             mcp[project] = sorted(servers.keys())
     return account, mcp
+
+
+def collect_auth(env=None):
+    """How Claude Code authenticates on this machine — no token values stored.
+
+    Claude Code needs one of: a Claude.ai OAuth login (Pro/Max/Team/Enterprise),
+    an Anthropic Console API key, CLAUDE_CODE_OAUTH_TOKEN, or cloud-provider auth
+    (Bedrock / Vertex). Install-only state is not a licence.
+    """
+    env = env if env is not None else collect_env()
+    auth = {
+        "credentials_file": False,
+        "has_access_token": False,
+        "has_refresh_token": False,
+        "token_state": "absent",   # absent | valid | expired | unknown
+        "subscription": None,      # pro | max | team | enterprise
+        "rate_limit_tier": None,
+        "method": "none",          # oauth | api_key | oauth_env | bedrock | vertex | none
+    }
+
+    path = os.path.join(CLAUDE_DIR, ".credentials.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        auth["credentials_file"] = True
+        oauth = data.get("claudeAiOauth") or {}
+        if oauth.get("accessToken"):
+            auth["has_access_token"] = True
+        if oauth.get("refreshToken"):
+            auth["has_refresh_token"] = True
+        sub = oauth.get("subscriptionType")
+        if isinstance(sub, str) and sub:
+            auth["subscription"] = sub.lower()
+        if oauth.get("rateLimitTier"):
+            auth["rate_limit_tier"] = oauth["rateLimitTier"]
+        expires = oauth.get("expiresAt")
+        if auth["has_access_token"]:
+            if auth["has_refresh_token"]:
+                auth["token_state"] = "valid"
+            elif isinstance(expires, (int, float)):
+                # expiresAt is milliseconds since epoch
+                now_ms = datetime.now(timezone.utc).timestamp() * 1000
+                auth["token_state"] = "valid" if expires > now_ms else "expired"
+            else:
+                auth["token_state"] = "unknown"
+        if auth["has_access_token"] or auth["has_refresh_token"]:
+            auth["method"] = "oauth"
+    except FileNotFoundError:
+        pass
+    except (OSError, json.JSONDecodeError):
+        auth["credentials_error"] = True
+
+    if auth["method"] == "none":
+        if env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+            auth["method"] = "oauth_env"
+            auth["token_state"] = "valid"
+        elif env.get("ANTHROPIC_API_KEY") or env.get("ANTHROPIC_AUTH_TOKEN"):
+            auth["method"] = "api_key"
+            auth["token_state"] = "valid"
+        elif truthy(env.get("CLAUDE_CODE_USE_BEDROCK", "")):
+            auth["method"] = "bedrock"
+            auth["token_state"] = "valid"
+        elif truthy(env.get("CLAUDE_CODE_USE_VERTEX", "")):
+            auth["method"] = "vertex"
+            auth["token_state"] = "valid"
+
+    return auth
+
+
+def plan_key(account=None, auth=None):
+    """Translation key for the paid plan, or None if unknown / not a Claude.ai plan."""
+    auth = auth or {}
+    account = account or {}
+    for raw in (auth.get("subscription"), account.get("organizationType")):
+        if raw and raw in PLAN_KEYS:
+            return PLAN_KEYS[raw]
+    return None
+
+
+def plan_label(account=None, auth=None):
+    """Human-readable plan name for headers."""
+    key = plan_key(account, auth)
+    if key:
+        return t(key)
+    method = (auth or {}).get("method")
+    if method == "api_key":
+        return t("plan.api_key")
+    if method == "oauth_env":
+        return t("plan.oauth_env")
+    if method == "bedrock":
+        return t("plan.bedrock")
+    if method == "vertex":
+        return t("plan.vertex")
+    if method == "oauth":
+        return t("plan.oauth_unknown")
+    return t("plan.none")
 
 
 def collect_local_history():
@@ -275,6 +382,15 @@ def collect_local_history():
 def collect(project_dirs=()):
     """Record the current state. project_dirs: extra projects to inspect."""
     account, mcp = collect_account_and_mcp()
+    env = collect_env()
+    auth = collect_auth(env)
+    # Prefer organisationType when credentials lack subscriptionType
+    if not auth.get("subscription"):
+        org = account.get("organizationType") or ""
+        if org.startswith("claude_"):
+            auth["subscription"] = org[len("claude_"):]
+        elif org in PAID_SUBSCRIPTIONS:
+            auth["subscription"] = org
     surfaces = {}
     for path in SYSTEM_FILES:
         surfaces[f"file:{path}"] = read_settings_file(path)
@@ -292,13 +408,14 @@ def collect(project_dirs=()):
     plugins = sorted(os.listdir(plugin_dir)) if os.path.isdir(plugin_dir) else []
 
     return {
-        "version": 3,
+        "version": 4,
         "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "project_dirs": sorted(set(project_dirs)),
         "surfaces": surfaces,
-        "env": collect_env(),
+        "env": env,
         "shell_profiles": collect_profiles(),
         "account": account,
+        "auth": auth,
         "mcp_servers": mcp,
         "plugins": plugins,
         "local_history": collect_local_history(),
@@ -396,8 +513,31 @@ def assess(snapshot):
         add("HIGH", "finding.profile_telemetry", path=path,
             lines="; ".join(lines)[:400])
 
+    # Licence / payment model: Claude Code needs a paid Claude.ai seat, an API
+    # key, or cloud-provider auth. Tokens themselves are never stored.
+    auth = snapshot.get("auth") or {}
+    account = snapshot.get("account") or {}
+    method = auth.get("method") or "none"
+    subscription = auth.get("subscription")
+    org_type = account.get("organizationType")
+
+    if method == "none":
+        add("HIGH", "finding.no_license")
+    elif auth.get("token_state") == "expired":
+        add("MEDIUM", "finding.auth_expired")
+    elif method == "api_key":
+        add("INFO", "finding.auth_api_key")
+    elif method in ("bedrock", "vertex"):
+        add("INFO", "finding.auth_cloud", provider=method)
+    elif method == "oauth_env":
+        add("INFO", "finding.auth_oauth_env")
+    elif subscription in PAID_SUBSCRIPTIONS:
+        add("INFO", "finding.subscription", plan=t(PLAN_KEYS[subscription]))
+    elif method == "oauth":
+        add("INFO", "finding.auth_oauth_unknown")
+
     # Enterprise unlocks the Compliance API for the organisation
-    if snapshot["account"].get("organizationType") == "claude_enterprise":
+    if org_type == "claude_enterprise" or subscription == "enterprise":
         add("MEDIUM", "finding.enterprise_plan")
 
     findings.sort(key=lambda f: -SEV_ORDER[f["severity"]])

@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 from . import core
+from .icons import ICON_NAME, icon_for_notify
 from .i18n import t
 
 UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
@@ -155,8 +156,9 @@ def _notify(title, body, urgency):
     if not shutil.which("notify-send"):
         print(f"{title}\n{body}")
         return
+    icon = icon_for_notify() or ICON_NAME
     cmd = ["notify-send", "--app-name=Claude Privacy Check",
-           f"--urgency={urgency}", "--icon=preferences-system-privacy"]
+           f"--urgency={urgency}", f"--icon={icon}"]
     if urgency == "critical":
         cmd.append("--expire-time=0")       # stays until dismissed
     subprocess.run(cmd + [title, body], check=False)
