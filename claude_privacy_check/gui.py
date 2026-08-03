@@ -56,6 +56,20 @@ DARK = {
     "chip_fg": "#1e2124", "code_bg": "#22252a",
 }
 
+# Instruction files fall into two kinds of thing: prose that shapes every
+# answer, and packaged capabilities the assistant can invoke.
+INSTRUCTION_GROUPS = (
+    ("instructions.group.general", ("instructions", "memory")),
+    ("instructions.group.capabilities", ("agent", "skill")),
+)
+# Organisation-pushed first -- that is the one nobody here wrote.
+SCOPE_ORDER = {"org": 0, "user": 1, "project": 2, "parent": 3}
+
+
+def _scope_rank(entry):
+    return (SCOPE_ORDER.get(entry["scope"], 9), entry["name"])
+
+
 STATUS_TONE = {"OK": "OK", "CHANGED": "MEDIUM", "CRITICAL": "CRITICAL",
                "NO_BASELINE": "INFO"}
 
@@ -295,6 +309,8 @@ class App:
     def _build_body(self):
         wrap = tk.Frame(self.root, bg=self.c["bg"])
         wrap.pack(fill="both", expand=True)
+        self.body_wrap = wrap        # carries the loading overlay
+        self.overlay = None
 
         self.canvas = tk.Canvas(wrap, bg=self.c["bg"], highlightthickness=0, bd=0)
         bar = tk.Scrollbar(wrap, orient="vertical", command=self.canvas.yview)
@@ -371,6 +387,65 @@ class App:
         self.btn_json.configure(text=t("btn.copy_json"))
         self.btn_close.configure(text=t("btn.close"))
         self.switch(self.view)
+
+    # ----------------------------------------------------- loading overlay
+
+    def show_loading(self, title, detail=""):
+        """Centred card over the body while a view gathers its data.
+
+        Without it the window comes up empty for as long as the collection
+        takes -- on the observer sweep that is half a minute, which reads as a
+        broken program rather than as work in progress.
+        """
+        if self.overlay is None:
+            frame = tk.Frame(self.body_wrap, bg=self.c["border"])
+            card = tk.Frame(frame, bg=self.c["card"])
+            card.pack(padx=1, pady=1)
+            self._overlay_title = tk.Label(card, text=title, font=self.f_head,
+                                           bg=self.c["card"], fg=self.c["fg"])
+            self._overlay_title.pack(padx=44, pady=(26, 6))
+            self._overlay_detail = tk.Label(card, text=detail, font=self.f_small,
+                                            bg=self.c["card"], fg=self.c["muted"],
+                                            wraplength=340, justify="center")
+            self._overlay_detail.pack(padx=44, pady=(0, 12))
+            track = tk.Frame(card, bg=self.c["bg"], height=4, width=320)
+            track.pack(padx=44, pady=(0, 26))
+            track.pack_propagate(False)
+            self._overlay_fill = tk.Frame(track, bg=self.c["accent"], height=4)
+            self._overlay_fill.place(x=0, y=0, relwidth=0.18)
+            self.overlay = frame
+            self._overlay_step = 0
+            self._overlay_determinate = False
+            self._pulse_overlay()
+        else:
+            self._overlay_title.configure(text=title)
+            self._overlay_detail.configure(text=detail)
+        self.overlay.place(relx=0.5, rely=0.40, anchor="center")
+        self.overlay.lift()
+
+    def update_loading(self, detail, fraction=None):
+        if self.overlay is None:
+            return
+        self._overlay_detail.configure(text=detail)
+        if fraction is not None:
+            # A real ratio arrived, so stop the indeterminate sweep.
+            self._overlay_determinate = True
+            self._overlay_fill.place_configure(
+                relx=0, relwidth=max(0.02, min(1.0, fraction)))
+
+    def hide_loading(self):
+        if self.overlay is not None:
+            self.overlay.destroy()
+            self.overlay = None
+
+    def _pulse_overlay(self):
+        """Indeterminate sweep, until a real progress ratio takes over."""
+        if self.overlay is None:
+            return
+        if not self._overlay_determinate:
+            self._overlay_step = (self._overlay_step + 1) % 50
+            self._overlay_fill.place_configure(relx=(self._overlay_step / 50) * 0.82)
+        self.root.after(70, self._pulse_overlay)
 
     # ----------------------------------------------------------- fragments
 
@@ -581,6 +656,7 @@ class App:
         if self.busy:
             return
         self.busy = True
+        self.show_loading(t("loading.license.title"), t("loading.license.detail"))
         self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
         self.btn_refresh.configure(state="disabled")
 
@@ -594,6 +670,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _license_done(self, report, error):
+        self.hide_loading()
         self.busy = False
         self.btn_refresh.configure(state="normal")
         if error is not None:
@@ -750,18 +827,14 @@ class App:
               email=account.get("emailAddress", "—"))
             + "\n" + t("observer.identity.note"))
 
+        # No list here any more. The inventory -- names, sizes, dates -- belongs
+        # to the history view; repeating it made the two tabs look like the same
+        # thing. What stays is the point this view is making: the directory
+        # names give the topics away before a single file is opened.
         self._section(t("observer.section.projects"),
                       t("count.projects", n=len(report["projects"])))
-        for project in report["projects"]:
-            card = self._card()
-            tk.Label(card, text=project["label"], font=self.f_head, bg=self.c["card"],
-                     fg=self.c["fg"], anchor="w").pack(fill="x", padx=14, pady=(10, 0))
-            tk.Label(card, text=t("data.project_line", sessions=project["sessions"],
-                                  size=data.human_bytes(project["bytes"]),
-                                  oldest=project["oldest"], newest=project["newest"]),
-                     font=self.f_small, bg=self.c["card"], fg=self.c["muted"],
-                     anchor="w").pack(fill="x", padx=14, pady=(2, 10))
-        self._note_card(t("observer.projects.note"))
+        self._note_card(t("observer.projects.note") + "\n"
+                        + t("observer.projects.pointer", tab=t("nav.data")))
 
         self._section(t("observer.section.pattern"))
         self._note_card(
@@ -812,13 +885,16 @@ class App:
         if self.busy:
             return
         self.busy = True
+        self.show_loading(t("loading.observer.title"), t("loading.observer.detail"))
         self.btn_refresh.configure(state="disabled")
         self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
 
         def note(done, total):
             # Called from the worker thread; hand it to Tk's thread.
-            self.root.after(0, lambda: self.status_line.configure(
-                text=t("observer.scanning", done=done, total=total)))
+            text = t("observer.scanning", done=done, total=total)
+            share = (done / total) if total else None
+            self.root.after(0, lambda: (self.status_line.configure(text=text),
+                                        self.update_loading(text, share)))
 
         def work():
             try:
@@ -830,6 +906,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _observer_done(self, report, error):
+        self.hide_loading()
         self.busy = False
         self.btn_refresh.configure(state="normal")
         if error is not None:
@@ -869,12 +946,23 @@ class App:
             self._note_card(t("instructions.none"))
             return
 
-        current = None
-        for entry in report["entries"]:
-            if entry["scope"] != current:
-                current = entry["scope"]
-                self._section(t("instructions.scope." + current))
-            self._rule_card(entry)
+        # Grouped by what a file *is*, not by where it sits. Prose that steers
+        # every answer and a packaged capability are different things; the scope
+        # (organisation / user / project) rides along on each card instead.
+        for group, kinds in INSTRUCTION_GROUPS:
+            entries = [e for e in report["entries"] if e["kind"] in kinds]
+            if not entries:
+                continue
+            self._section(t(group), t("count.files", n=len(entries)))
+            for entry in sorted(entries, key=_scope_rank):
+                self._rule_card(entry)
+        leftover = [e for e in report["entries"]
+                    if not any(e["kind"] in kinds for _g, kinds in INSTRUCTION_GROUPS)]
+        if leftover:
+            self._section(t("instructions.group.other"),
+                          t("count.files", n=len(leftover)))
+            for entry in sorted(leftover, key=_scope_rank):
+                self._rule_card(entry)
         tk.Frame(self.body, bg=self.c["bg"], height=12).pack()
 
     def _rule_card(self, entry):
@@ -891,6 +979,9 @@ class App:
         tk.Label(head, text=f" {t('instructions.kind.' + entry['kind'])} ",
                  font=self.f_small, bg=self.c[tone], fg=self.c["chip_fg"],
                  padx=6, pady=1).pack(side="left")
+        tk.Label(head, text=t("instructions.scope." + entry["scope"]),
+                 font=self.f_small, bg=self.c["card"],
+                 fg=self.c["muted"]).pack(side="left", padx=(6, 0))
         name = tk.Label(head, text=entry["name"], font=self.f_head,
                         bg=self.c["card"], fg=self.c["fg"], anchor="w")
         name.pack(side="left", padx=(8, 0))
@@ -929,6 +1020,7 @@ class App:
         if self.busy:
             return
         self.busy = True
+        self.show_loading(t("loading.instructions.title"), t("loading.instructions.detail"))
         self.btn_refresh.configure(state="disabled")
         self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
         baseline = core.load_baseline()
@@ -944,6 +1036,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _rules_done(self, report, error):
+        self.hide_loading()
         self.busy = False
         self.btn_refresh.configure(state="normal")
         if error is not None:
@@ -1009,6 +1102,7 @@ class App:
         if self.busy:
             return
         self.busy = True
+        self.show_loading(t("loading.check.title"), t("loading.check.detail"))
         self.chip.configure(text=f"  {t('status.checking')}  ", bg=self.c["muted"])
         self.status_line.configure(text=t("status.checking.detail"))
         self.btn_refresh.configure(state="disabled")
@@ -1023,6 +1117,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _check_done(self, result, error):
+        self.hide_loading()
         self.busy = False
         self.btn_refresh.configure(state="normal")
         if error is not None:
@@ -1043,6 +1138,7 @@ class App:
         if self.busy:
             return
         self.busy = True
+        self.show_loading(t("loading.data.title"), t("loading.data.detail"))
         self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
         self.btn_refresh.configure(state="disabled")
 
@@ -1056,6 +1152,7 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def _data_done(self, inventory, error):
+        self.hide_loading()
         self.busy = False
         self.btn_refresh.configure(state="normal")
         if error is not None:

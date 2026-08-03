@@ -136,12 +136,9 @@ def show_observer(as_json):
 
     print()
     print(paint(f"── {t('observer.section.projects')} ──", "INFO"))
-    for project in report["projects"]:
-        print(f"  {project['label']}")
-        print("      " + t("data.project_line", sessions=project["sessions"],
-                           size=data.human_bytes(project["bytes"]),
-                           oldest=project["oldest"], newest=project["newest"]))
+    print("  " + t("count.projects", n=len(report["projects"])))
     print("  " + paint(t("observer.projects.note"), "INFO"))
+    print("  " + paint(t("observer.projects.pointer", tab="--list-data"), "INFO"))
 
     print()
     print(paint(f"── {t('observer.section.pattern')} ──", "INFO"))
