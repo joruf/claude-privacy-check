@@ -86,7 +86,7 @@ account e-mail, the organisation id and every watched path.
 
 ## What it looks like
 
-The window has four views and a menu bar; the command line does everything the
+The window has six views and a menu bar; the command line does everything the
 window does.
 
 ### Check — assessment and deviation from the baseline
@@ -96,6 +96,8 @@ window does.
 ### Local data — the history on disk, deletable per entry
 
 ![Local data](docs/screenshots/local-data.png)
+
+### Working time — the timesheet those transcripts add up to
 
 ### Observer view — what a triage over that data would surface
 
@@ -140,6 +142,27 @@ Guards, each covered by a test:
 - never `.credentials.json`, `settings.json`, `settings.local.json`,
   `policy-limits.json`, `remote-settings.json`
 - sessions running right now are detected and flagged in the confirmation
+
+### Working time
+
+Every line a session writes carries a timestamp, to the millisecond. Read in
+order they stop describing *what* was worked on and start describing *when*:
+start of day, breaks, end of day, the Sunday evening, the hour after midnight.
+Nobody set up a time clock. One exists anyway, and it is finer-grained than any
+clock a works council ever negotiated over.
+
+This view runs that reconstruction — per day, week, weekday, hour of the day and
+project — on the local copy, in this machine's time zone, which is exactly what
+anyone holding a copy of the data could run. It is also simply useful: it is the
+closest thing to an honest answer to "how long did that actually take".
+
+The method, stated in the interface as well:
+
+- a minute with at least one event counts as a worked minute
+- a gap of up to 15 minutes counts as continued work, a longer one as a break
+- days are cut at local midnight, the way a timesheet cuts them
+- it is a **lower bound** — work without Claude Code leaves no timestamp here,
+  and these are figures for activity, not attendance
 
 ### Observer view
 
@@ -206,10 +229,12 @@ claude-privacy-check --init          # record a new baseline (overwrites!)
 
 claude-privacy-check --list-data     # local history inventory
 claude-privacy-check --delete PATH   # delete below ~/.claude, asks first
+claude-privacy-check --cli --worktime      # working time (terminal)
 claude-privacy-check --cli --observer      # triage summary (terminal)
 claude-privacy-check --cli --instructions  # instruction files (terminal)
 
 claude-privacy-check --data          # GUI: local data view
+claude-privacy-check --worktime      # GUI: working time
 claude-privacy-check --observer      # GUI: observer view
 claude-privacy-check --instructions  # GUI: instructions view
 claude-privacy-check --language de   # switch language, remembered
@@ -242,6 +267,7 @@ run.py                            entry point
 claude_privacy_check/
 ├── core.py                       collection, assessment, comparison
 ├── data.py                       local history inventory and guarded deletion
+├── worktime.py                   working time from the transcript timestamps
 ├── observer.py                   what a triage over that data would surface
 ├── instructions.py               instruction files loaded into sessions
 ├── watch.py                      notification and systemd units

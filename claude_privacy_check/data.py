@@ -75,6 +75,26 @@ def as_date(ts):
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d") if ts else "—"
 
 
+def transcript_files():
+    """(project directory name, transcript path) for every transcript.
+
+    Subagent transcripts live in a nested ``subagents/`` folder; they belong to
+    the project above them, not to a project called "subagents". Shared by the
+    observer sweep and the working-time reconstruction, which both walk the
+    whole stock rather than the per-project inventory above.
+    """
+    if not os.path.isdir(PROJECTS_DIR):
+        return
+    for bucket in sorted(os.listdir(PROJECTS_DIR)):
+        root = os.path.join(PROJECTS_DIR, bucket)
+        if not os.path.isdir(root):
+            continue
+        for base, _dirs, files in os.walk(root):
+            for name in sorted(files):
+                if name.endswith(".jsonl"):
+                    yield bucket, os.path.join(base, name)
+
+
 def decode_project_path(name):
     """Directory name -> working path.
 

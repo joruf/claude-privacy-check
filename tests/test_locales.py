@@ -24,7 +24,17 @@ DYNAMIC_KEYS = (
     {f"severity.{s}" for s in ("CRITICAL", "HIGH", "MEDIUM", "INFO")}
     | {f"status.{s}" for s in ("OK", "CHANGED", "CRITICAL", "NO_BASELINE")}
     | {f"status.detail.{s}" for s in ("OK", "CHANGED", "CRITICAL", "NO_BASELINE")}
+    | {f"weekday.{n}" for n in range(7)}
 )
+
+
+def verdict_keys():
+    """Conclusions the modules return as a key for the output layer to render."""
+    found = set()
+    for name in ("observer.py", "worktime.py", "license.py"):
+        source = (PKG / name).read_text(encoding="utf-8")
+        found |= set(re.findall(r'"(\w+\.verdict\.\w+)"', source))
+    return found
 
 
 def literal_keys():
@@ -60,7 +70,8 @@ def error_keys():
 
 
 def required_keys():
-    return literal_keys() | DYNAMIC_KEYS | finding_keys() | store_keys() | error_keys()
+    return (literal_keys() | DYNAMIC_KEYS | finding_keys() | store_keys()
+            | error_keys() | verdict_keys())
 
 
 def load(code):
