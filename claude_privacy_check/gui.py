@@ -4,6 +4,7 @@ Views:
   Check          assessment and deviation from the baseline
   Licence        subscription / auth details readable from this machine
   Local data     inventory of the local history with per-entry deletion
+  Working time   the timesheet the transcript timestamps add up to
   Observer view  what a mechanical triage over that data would surface
   Instructions   instruction files loaded into sessions
 
@@ -24,7 +25,8 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox
 
-from . import about, core, data, instructions, license as licence, observer
+from . import (about, core, data, instructions, license as licence, observer,
+               worktime)
 from .icons import SIZES, icon_png
 from .i18n import (available_languages, current_language, save_preference,
                    set_language, t)
@@ -33,9 +35,17 @@ NAV_TABS = (
     ("check", "nav.check"),
     ("license", "nav.license"),
     ("data", "nav.data"),
+    ("worktime", "nav.worktime"),
     ("observer", "nav.observer"),
     ("instructions", "nav.instructions"),
 )
+
+# The day log and the week list are long; these are what fits without the page
+# turning into a spreadsheet. Both are stated in the interface, and the days
+# have a button for the rest -- a cap nobody is told about reads as "that's all
+# there was".
+RECENT_DAYS = 14
+RECENT_WEEKS = 12
 
 LIGHT = {
     "bg": "#f2f3f5", "card": "#ffffff", "border": "#dcdfe3",
@@ -97,10 +107,12 @@ class App:
         self.report = None
         self.rules = None
         self.license = None
+        self.worktime = None
         self.opened = set()   # instruction files with the body unfolded
         self.license_open = set()  # licence sections with details unfolded
         self.view = start_view
         self.expanded = set()        # projects with the session list unfolded
+        self.all_days = False        # working time: whole log instead of recent
         self.wrappable = []          # labels whose wraplength follows resizing
         self.busy = False
 
@@ -240,6 +252,8 @@ class App:
         view_menu.add_command(label=t("nav.license"),
                               command=lambda: self.switch("license"))
         view_menu.add_command(label=t("nav.data"), command=lambda: self.switch("data"))
+        view_menu.add_command(label=t("nav.worktime"),
+                              command=lambda: self.switch("worktime"))
         view_menu.add_command(label=t("nav.observer"),
                               command=lambda: self.switch("observer"))
         view_menu.add_command(label=t("nav.instructions"),
@@ -299,9 +313,11 @@ class App:
 
         self.tabs = {}
         for key, label_key in NAV_TABS:
-            btn = tk.Label(row, text=t(label_key), font=self.f_head, padx=14, pady=6,
+            # Tighter than it looks comfortable at: six tabs have to fit the
+            # minimum window width, and a clipped tab is worse than a narrow one.
+            btn = tk.Label(row, text=t(label_key), font=self.f_head, padx=9, pady=6,
                            cursor="hand2", bg=self.c["card"], fg=self.c["muted"])
-            btn.pack(side="left", padx=(0, 6))
+            btn.pack(side="left", padx=(0, 3))
             btn.bind("<Button-1>", lambda _e, k=key: self.switch(k))
             self.tabs[key] = btn
         tk.Frame(self.root, bg=self.c["border"], height=1).pack(fill="x", side="top")
@@ -798,6 +814,271 @@ class App:
                      command=lambda s=store: self.delete_store(s)).pack(
                          side="right", padx=(12, 0))
 
+    # ----------------------------------------------------- view: worktime
+
+    def render_worktime(self):
+        report = self.worktime
+        if report is None:
+            return
+        self._clear_body()
+
+        total = worktime.human_minutes(report["total_active"])
+        marked = bool(report["off_hours_active"] or report["weekend_active"])
+        if not report["active_days"]:
+            self.chip.configure(text=f"  {t('worktime.chip.empty')}  ", bg=self.c["INFO"])
+        else:
+            self.chip.configure(
+                text=f"  {t('worktime.chip', hours=total, days=report['active_days'])}  ",
+                bg=self.c["MEDIUM"] if marked else self.c["accent"])
+        self.status_line.configure(text=t(worktime.verdict_key(report)))
+        if self.result is None:      # started directly in this view
+            account, _mcp = core.collect_account_and_mcp()
+            auth = core.collect_auth()
+            self.subtitle.configure(
+                text=self._account_line(account, auth) + "\n"
+                + t("worktime.subtitle", first=report["first_day"] or "—",
+                    last=report["last_day"] or "—", sessions=report["sessions"],
+                    stamps=report["stamps"]))
+
+        if not report["active_days"]:
+            self._section(t("worktime.section.overview"))
+            self._note_card(t("worktime.empty"))
+            return
+
+        self._section(t("worktime.section.overview"))
+        self._stat_tiles(self._worktime_tiles(report))
+        self._note_card(t("worktime.method", gap=report["idle_gap"]) + "\n"
+                        + t("worktime.method.floor"))
+
+        self._section(t("worktime.section.weekday"))
+        card = self._meter_card()
+        peak = max(report["weekday_active"].values()) or 1
+        for day in range(7):
+            minutes = report["weekday_active"][day]
+            self._meter(card, t(f"weekday.{day}"),
+                        worktime.human_minutes(minutes) if minutes else "—",
+                        minutes / peak, tone="MEDIUM" if day >= 5 else "accent",
+                        label_width=4)
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+        self._note_card(t("worktime.weekday.note"))
+
+        self._section(t("worktime.section.hours"))
+        card = self._meter_card()
+        peak = max(report["hour_active"].values()) or 1
+        for hour in range(24):
+            minutes = report["hour_active"][hour]
+            off = (hour < report["business_start"] or hour >= report["business_end"])
+            self._meter(card, f"{hour:02d}",
+                        worktime.human_minutes(minutes) if minutes else "—",
+                        minutes / peak, tone="MEDIUM" if off else "accent",
+                        label_width=4)
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+        self._note_card(t("worktime.hours.note", start=report["business_start"],
+                          end=report["business_end"]))
+
+        weeks = report["weeks"][-RECENT_WEEKS:]
+        self._section(t("worktime.section.weeks"))
+        card = self._meter_card()
+        peak = max(w["active"] for w in weeks) or 1
+        for week in weeks:
+            over = week["active"] > report["week_target"] * 60
+            self._meter(card, t("worktime.weeks.label", week=week["week"]),
+                        worktime.human_minutes(week["active"]) + "  ·  "
+                        + t("worktime.short.days", n=week["days"]),
+                        week["active"] / peak,
+                        tone="MEDIUM" if over else "accent", label_width=8)
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+        self._note_card(t("worktime.weeks.note", shown=len(weeks),
+                          total=len(report["weeks"]),
+                          target=f"{report['week_target']:.0f}",
+                          over=report["long_weeks"]))
+
+        days = report["days"] if self.all_days else report["days"][:RECENT_DAYS]
+        self._section(t("worktime.section.days"))
+        card = self._card()
+        tk.Frame(card, bg=self.c["card"], height=8).pack()
+        for day in days:
+            self._worktime_day_row(card, day)
+        if len(report["days"]) > RECENT_DAYS:
+            row = tk.Frame(card, bg=self.c["card"])
+            row.pack(fill="x", padx=14, pady=(6, 12))
+            self._button(row, t("btn.show_recent_days") if self.all_days
+                         else t("btn.show_all_days"),
+                         self.toggle_all_days).pack(side="left")
+        else:
+            tk.Frame(card, bg=self.c["card"], height=8).pack()
+        self._note_card(t("worktime.days.note", shown=len(days),
+                          total=len(report["days"])))
+
+        self._section(t("worktime.section.projects"),
+                      t("count.projects", n=len(report["projects"])))
+        card = self._meter_card()
+        peak = report["projects"][0]["active"] or 1
+        for project in report["projects"]:
+            # The compact day count, not the sentence the terminal prints -- the
+            # value column is a fixed width and a long one gets cut off.
+            self._meter(card, os.path.basename(project["label"]) or project["label"],
+                        worktime.human_minutes(project["active"]) + "  ·  "
+                        + t("worktime.short.days", n=project["days"]),
+                        project["active"] / peak, label_width=20)
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+        self._note_card(t("worktime.projects.note"))
+
+        self._note_card(t("worktime.note.clock", tab=t("nav.data")))
+        tk.Frame(self.body, bg=self.c["bg"], height=12).pack()
+
+    def _worktime_tiles(self, report):
+        """The headline figures. Neutral unless the number is the point."""
+        longest = report["longest_day"] or {"date": "—", "active": 0}
+        earliest = report["earliest_start"] or {"date": "—", "time": "—"}
+        latest = report["latest_end"] or {"date": "—", "time": "—"}
+        night = report["off_hours_active"]
+        weekend = report["weekend_active"]
+        return [
+            (worktime.human_minutes(report["total_active"]),
+             t("worktime.stat.total"), "fg"),
+            (str(report["active_days"]), t("worktime.stat.days"), "fg"),
+            (worktime.human_minutes(report["average_active"]),
+             t("worktime.stat.average"), "fg"),
+            (worktime.human_minutes(report["median_active"]),
+             t("worktime.stat.median"), "fg"),
+            (worktime.human_minutes(longest["active"]),
+             t("worktime.stat.longest", date=longest["date"]), "fg"),
+            (worktime.human_minutes(report["longest_block"]),
+             t("worktime.stat.block"), "fg"),
+            (earliest["time"], t("worktime.stat.earliest", date=earliest["date"]), "fg"),
+            (latest["time"], t("worktime.stat.latest", date=latest["date"]), "fg"),
+            (worktime.human_minutes(report["total_pause"]),
+             t("worktime.stat.pause"), "fg"),
+            (worktime.human_minutes(night),
+             t("worktime.stat.offhours", start=report["business_start"],
+               end=report["business_end"]), "MEDIUM" if night else "fg"),
+            (worktime.human_minutes(weekend), t("worktime.stat.weekend"),
+             "MEDIUM" if weekend else "fg"),
+            (str(report["total_prompts"]), t("worktime.stat.prompts"), "fg"),
+        ]
+
+    def _stat_tiles(self, tiles, columns=3):
+        """Figure over label, in a grid.
+
+        The values wear text colours, not chart colours -- they are not a series.
+        A tile turns to the warning tone only where the number itself is the
+        finding, which is the one thing this view is pointing at.
+        """
+        card = self._card()
+        grid = tk.Frame(card, bg=self.c["card"])
+        grid.pack(fill="x", padx=14, pady=(14, 4))
+        for column in range(columns):
+            grid.columnconfigure(column, weight=1, uniform="stat")
+        for index, (value, label, tone) in enumerate(tiles):
+            cell = tk.Frame(grid, bg=self.c["card"])
+            cell.grid(row=index // columns, column=index % columns, sticky="ew",
+                      pady=(0, 12), padx=(0, 12))
+            tk.Label(cell, text=value, font=self.f_title, bg=self.c["card"],
+                     fg=self.c[tone], anchor="w").pack(fill="x", anchor="w")
+            caption = tk.Label(cell, text=label, font=self.f_small, bg=self.c["card"],
+                               fg=self.c["muted"], anchor="w", justify="left")
+            caption.pack(fill="x", anchor="w")
+            self.wrappable.append((caption, 120 + 260 * (columns - 1)))
+
+    def _meter_card(self):
+        card = self._card()
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+        return card
+
+    def _meter(self, parent, label, value, fraction, tone="accent", label_width=6):
+        """One bar: label, track, value.
+
+        Magnitude, so a single hue throughout; the reserved warning tone marks
+        the rows a section is pointing at (weekend, hours outside the window, a
+        week over the nominal target) and nothing else.
+        """
+        row = tk.Frame(parent, bg=self.c["card"])
+        row.pack(fill="x", padx=14, pady=(0, 3))
+        tk.Label(row, text=label, font=self.f_small, bg=self.c["card"],
+                 fg=self.c["fg"], width=label_width, anchor="w").pack(side="left")
+        tk.Label(row, text=value, font=self.f_mono, bg=self.c["card"],
+                 fg=self.c["muted"], width=20, anchor="e").pack(side="right")
+        track = tk.Frame(row, bg=self.c["bg"], height=10)
+        track.pack(side="left", fill="x", expand=True, padx=(8, 10))
+        track.pack_propagate(False)
+        if fraction > 0:
+            tk.Frame(track, bg=self.c[tone], height=10).place(
+                x=0, y=0, relwidth=min(1.0, max(0.015, fraction)), relheight=1)
+
+    def _worktime_day_row(self, parent, day):
+        row = tk.Frame(parent, bg=self.c["code_bg"])
+        row.pack(fill="x", padx=14, pady=(0, 4))
+
+        head = tk.Frame(row, bg=self.c["code_bg"])
+        head.pack(fill="x", padx=10, pady=(7, 0))
+        tk.Label(head, text=f"{day['date']}  {t('weekday.' + str(day['weekday']))}",
+                 font=self.f_mono, bg=self.c["code_bg"], fg=self.c["fg"],
+                 anchor="w").pack(side="left")
+        for flag, key in ((day["weekend"], "worktime.day.weekend"),
+                          (day["off_hours"], "worktime.day.night")):
+            if flag:
+                tk.Label(head, text=f" {t(key)} ", font=self.f_small,
+                         bg=self.c["MEDIUM"], fg=self.c["chip_fg"], padx=5,
+                         pady=1).pack(side="right", padx=(6, 0))
+
+        line = tk.Label(row, text=t("worktime.day.line", start=day["start"],
+                                    end=day["end"],
+                                    active=worktime.human_minutes(day["active"]),
+                                    pause=worktime.human_minutes(day["pause"]),
+                                    blocks=day["blocks"]),
+                        font=self.f_small, bg=self.c["code_bg"], fg=self.c["fg"],
+                        anchor="w", justify="left")
+        line.pack(fill="x", padx=10, pady=(2, 0))
+        self.wrappable.append((line, 90))
+
+        projects = ", ".join(os.path.basename(p) or p for p in day["projects"])
+        meta = tk.Label(row, text=t("worktime.day.meta", prompts=day["prompts"],
+                                    projects=projects or "—"),
+                        font=self.f_small, bg=self.c["code_bg"], fg=self.c["muted"],
+                        anchor="w", justify="left")
+        meta.pack(fill="x", padx=10, pady=(0, 7))
+        self.wrappable.append((meta, 90))
+
+    def toggle_all_days(self):
+        self.all_days = not self.all_days
+        self.render_worktime()
+        self.canvas.yview_moveto(0)
+
+    def reload_worktime(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.show_loading(t("loading.worktime.title"), t("loading.worktime.detail"))
+        self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
+        self.btn_refresh.configure(state="disabled")
+
+        def note(done, total):
+            # Called from the worker thread; hand it to Tk's thread.
+            text = t("observer.scanning", done=done, total=total)
+            share = (done / total) if total else None
+            self.root.after(0, lambda: (self.status_line.configure(text=text),
+                                        self.update_loading(text, share)))
+
+        def work():
+            try:
+                payload, error = worktime.build_report(progress=note), None
+            except Exception as exc:               # noqa: BLE001 -- surfaced in the UI
+                payload, error = None, exc
+            self.root.after(0, lambda: self._worktime_done(payload, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _worktime_done(self, report, error):
+        self.hide_loading()
+        self.busy = False
+        self.btn_refresh.configure(state="normal")
+        if error is not None:
+            messagebox.showerror(t("app.title"), t("error.data_failed", error=error))
+            return
+        self.worktime = report
+        self.render_worktime()
+
     # ----------------------------------------------------- view: observer
 
     def render_observer(self):
@@ -841,7 +1122,8 @@ class App:
             t("observer.pattern.hours", start=observer.BUSINESS_START,
               end=observer.BUSINESS_END, count=report["off_hours"])
             + " · " + t("observer.pattern.weekend", count=report["weekend"])
-            + "\n" + t("observer.pattern.note"))
+            + "\n" + t("observer.pattern.note")
+            + "\n" + t("observer.pattern.pointer", tab=t("nav.worktime")))
 
         self._section(t("observer.section.sweep"))
         for category in report["categories"]:
@@ -1065,6 +1347,7 @@ class App:
         self.foot_note.configure(
             text=t("caveat.server_export") if view == "check"
             else t("license.intro") if view == "license"
+            else t("worktime.intro") if view == "worktime"
             else t("observer.intro") if view == "observer"
             else t("instructions.intro") if view == "instructions"
             else t("delete.note"))
@@ -1073,6 +1356,8 @@ class App:
         self.btn_baseline.configure(state="normal" if view == "check" else "disabled")
         if view == "data":
             self.reload_data() if self.data is None else self.render_data()
+        elif view == "worktime":
+            self.reload_worktime() if self.worktime is None else self.render_worktime()
         elif view == "license":
             self.reload_license() if self.license is None else self.render_license()
         elif view == "observer":
@@ -1086,6 +1371,10 @@ class App:
     def refresh(self):
         if self.view == "data":
             self.reload_data()
+            return
+        if self.view == "worktime":
+            self.worktime = None
+            self.reload_worktime()
             return
         if self.view == "license":
             self.license = None
@@ -1288,7 +1577,7 @@ class App:
 
     def copy_json(self):
         payload = ({"check": self.result, "license": self.license, "data": self.data,
-                    "observer": self.report,
+                    "worktime": self.worktime, "observer": self.report,
                     "instructions": self.rules}.get(self.view))
         if payload is None:
             return

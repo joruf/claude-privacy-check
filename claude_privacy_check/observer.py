@@ -18,8 +18,8 @@ import re
 from collections import Counter
 from datetime import datetime
 
-from .core import CLAUDE_DIR, PROJECTS_DIR, collect_account_and_mcp
-from .data import as_date, decode_project_path
+from .core import collect_account_and_mcp
+from .data import as_date, decode_project_path, transcript_files
 
 # Terms an observer would sweep for. Search patterns, not interface text, so
 # they live here rather than in the locale files -- but German and English are
@@ -121,24 +121,6 @@ def _excerpt(line_bytes, match):
     return ("…" if start > 0 else "") + snippet + ("…" if end < len(line_bytes) else "")
 
 
-def _transcripts():
-    """(project directory, transcript path) for every transcript.
-
-    Subagent transcripts live in a nested ``subagents/`` folder; they belong to
-    the project above them, not to a project called "subagents".
-    """
-    if not os.path.isdir(PROJECTS_DIR):
-        return
-    for bucket in sorted(os.listdir(PROJECTS_DIR)):
-        root = os.path.join(PROJECTS_DIR, bucket)
-        if not os.path.isdir(root):
-            continue
-        for base, _dirs, files in os.walk(root):
-            for name in sorted(files):
-                if name.endswith(".jsonl"):
-                    yield bucket, os.path.join(base, name)
-
-
 def build_report(progress=None):
     """Everything a mechanical triage would extract. Reads, never writes."""
     account, _mcp = collect_account_and_mcp()
@@ -151,7 +133,7 @@ def build_report(progress=None):
     hits = {slug: {"count": 0, "sessions": set(), "samples": []}
             for slug, _key, _conf, _patterns in CATEGORIES}
     total_bytes = 0
-    entries = list(_transcripts())
+    entries = list(transcript_files())
 
     for index, (bucket, path) in enumerate(entries):
         if progress:

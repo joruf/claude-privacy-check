@@ -7,7 +7,7 @@ import json
 import os
 import sys
 
-from . import about, core, data, instructions, observer, watch
+from . import about, core, data, instructions, observer, watch, worktime
 from . import license as licence
 from .i18n import (apply_startup_language, available_languages, current_language,
                    save_preference, t)
@@ -29,6 +29,17 @@ def clip(value, width=90):
 
 def sev(severity):
     return paint(f"[{t('severity.' + severity)}]", severity)
+
+
+def bar(fraction, width=28):
+    """A magnitude as a block bar -- the terminal's answer to the GUI meters.
+
+    Anything above zero gets at least one block: a row that reads 0:12 h next to
+    an empty bar looks like a rendering fault.
+    """
+    fraction = max(0.0, min(1.0, fraction))
+    filled = max(1, int(round(fraction * width))) if fraction else 0
+    return "█" * filled + paint("·" * (width - filled), "INFO")
 
 
 # ------------------------------------------------------------------ output
@@ -149,6 +160,7 @@ def show_observer(as_json):
                    end=observer.BUSINESS_END, count=report["off_hours"]))
     print("  " + t("observer.pattern.weekend", count=report["weekend"]))
     print("  " + paint(t("observer.pattern.note"), "INFO"))
+    print("  " + paint(t("observer.pattern.pointer", tab="--worktime"), "INFO"))
 
     print()
     print(paint(f"── {t('observer.section.sweep')} ──", "INFO"))
@@ -167,6 +179,120 @@ def show_observer(as_json):
             print(f"        {clip(sample['excerpt'], 110)}")
     print()
     print(paint(t(observer.verdict_key(report)), "OK"))
+    return 0
+
+
+def show_worktime(as_json):
+    report = worktime.build_report()
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+        return 0
+
+    print(paint(t("worktime.intro"), "INFO"))
+    print()
+    if not report["active_days"]:
+        print("  " + t("worktime.empty"))
+        return 0
+
+    print(paint(f"── {t('worktime.section.overview')} ──", "INFO"))
+    print("  " + t("worktime.subtitle", first=report["first_day"],
+                   last=report["last_day"], sessions=report["sessions"],
+                   stamps=report["stamps"]))
+    longest = report["longest_day"]
+    earliest, latest = report["earliest_start"], report["latest_end"]
+    night, weekend = report["off_hours_active"], report["weekend_active"]
+    rows = [
+        (t("worktime.stat.total"),
+         worktime.human_minutes(report["total_active"]), "OK"),
+        (t("worktime.stat.days"), str(report["active_days"]), "OK"),
+        (t("worktime.stat.average"),
+         worktime.human_minutes(report["average_active"]), "OK"),
+        (t("worktime.stat.median"),
+         worktime.human_minutes(report["median_active"]), "OK"),
+        (t("worktime.stat.longest", date=longest["date"]),
+         worktime.human_minutes(longest["active"]), "OK"),
+        (t("worktime.stat.block"),
+         worktime.human_minutes(report["longest_block"]), "OK"),
+        (t("worktime.stat.earliest", date=earliest["date"]), earliest["time"], "OK"),
+        (t("worktime.stat.latest", date=latest["date"]), latest["time"], "OK"),
+        (t("worktime.stat.pause"),
+         worktime.human_minutes(report["total_pause"]), "OK"),
+        (t("worktime.stat.offhours", start=report["business_start"],
+           end=report["business_end"]),
+         worktime.human_minutes(night), "MEDIUM" if night else "OK"),
+        (t("worktime.stat.weekend"), worktime.human_minutes(weekend),
+         "MEDIUM" if weekend else "OK"),
+        (t("worktime.stat.prompts"), str(report["total_prompts"]), "OK"),
+    ]
+    width = max(len(label) for label, _value, _tone in rows)
+    for label, value, tone in rows:
+        print(f"  {label:<{width}}  {paint(value, tone)}")
+    print("  " + paint(t("worktime.method", gap=report["idle_gap"]), "INFO"))
+    print("  " + paint(t("worktime.method.floor"), "INFO"))
+
+    print()
+    print(paint(f"── {t('worktime.section.weekday')} ──", "INFO"))
+    peak = max(report["weekday_active"].values()) or 1
+    for day in range(7):
+        minutes = report["weekday_active"][day]
+        print(f"  {t('weekday.' + str(day)):<4} {bar(minutes / peak)} "
+              f"{worktime.human_minutes(minutes):>9}")
+
+    print()
+    print(paint(f"── {t('worktime.section.hours')} ──", "INFO"))
+    peak = max(report["hour_active"].values()) or 1
+    for hour in range(24):
+        minutes = report["hour_active"][hour]
+        off = hour < report["business_start"] or hour >= report["business_end"]
+        label = paint(f"{hour:02d}", "MEDIUM") if off and minutes else f"{hour:02d}"
+        print(f"  {label}   {bar(minutes / peak)} "
+              f"{worktime.human_minutes(minutes) if minutes else '—':>9}")
+    print("  " + paint(t("worktime.hours.note", start=report["business_start"],
+                         end=report["business_end"]), "INFO"))
+
+    print()
+    print(paint(f"── {t('worktime.section.weeks')} ──", "INFO"))
+    weeks = report["weeks"]
+    peak = max(w["active"] for w in weeks) or 1
+    for week in weeks:
+        print(f"  {t('worktime.weeks.label', week=week['week']):<9} "
+              f"{bar(week['active'] / peak)} "
+              f"{worktime.human_minutes(week['active']):>9}  "
+              f"{t('worktime.short.days', n=week['days'])}")
+    print("  " + paint(t("worktime.weeks.note", shown=len(weeks), total=len(weeks),
+                         target=f"{report['week_target']:.0f}",
+                         over=report["long_weeks"]), "INFO"))
+
+    print()
+    print(paint(f"── {t('worktime.section.days')} ──", "INFO"))
+    for day in report["days"]:
+        marks = [t(key) for flag, key in
+                 ((day["weekend"], "worktime.day.weekend"),
+                  (day["off_hours"], "worktime.day.night")) if flag]
+        head = f"{day['date']}  {t('weekday.' + str(day['weekday']))}"
+        print(f"  {head}" + (paint("  [" + ", ".join(marks) + "]", "MEDIUM")
+                             if marks else ""))
+        print("      " + t("worktime.day.line", start=day["start"], end=day["end"],
+                           active=worktime.human_minutes(day["active"]),
+                           pause=worktime.human_minutes(day["pause"]),
+                           blocks=day["blocks"]))
+        print("      " + paint(
+            t("worktime.day.meta", prompts=day["prompts"],
+              projects=", ".join(os.path.basename(p) or p
+                                 for p in day["projects"]) or "—"), "INFO"))
+
+    print()
+    print(paint(f"── {t('worktime.section.projects')} ──", "INFO"))
+    for project in report["projects"]:
+        print(f"  {os.path.basename(project['label']) or project['label']}")
+        print("      " + t("worktime.project.line",
+                           active=worktime.human_minutes(project["active"]),
+                           days=project["days"]))
+    print("  " + paint(t("worktime.projects.note"), "INFO"))
+
+    print()
+    print(paint(t(worktime.verdict_key(report)), "MEDIUM"))
+    print(paint(t("worktime.note.clock", tab="--list-data"), "INFO"))
     return 0
 
 
@@ -263,6 +389,7 @@ def build_parser(lang_codes):
     p.add_argument("--project", action="append", default=None,
                    metavar="DIR", help=t("cli.help.project"))
     p.add_argument("--list-data", action="store_true", help=t("cli.help.list_data"))
+    p.add_argument("--worktime", action="store_true", help=t("cli.help.worktime"))
     p.add_argument("--observer", action="store_true", help=t("cli.help.observer"))
     p.add_argument("--instructions", action="store_true",
                    help=t("cli.help.instructions"))
@@ -299,7 +426,8 @@ def _wants_gui(args):
         return False
     if args.project is not None:
         return False
-    # bare launch, --language, --data / --license / --observer / --instructions → window
+    # bare launch, --language and the view flags (--data / --license / --worktime
+    # / --observer / --instructions) → window
     return True
 
 
@@ -340,12 +468,15 @@ def main(argv=None):
         from .gui import run as run_gui
         return run_gui("data" if args.data else
                        "license" if args.license else
+                       "worktime" if args.worktime else
                        "observer" if args.observer else
                        "instructions" if args.instructions else "check")
     if args.license:
         return show_license(args.json)
     if args.list_data:
         return list_data(args.json)
+    if args.worktime:
+        return show_worktime(args.json)
     if args.observer:
         return show_observer(args.json)
     if args.instructions:
