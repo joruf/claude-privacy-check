@@ -6,8 +6,11 @@ organisation can push its own via the ``claudeMd`` setting. Those are
 instructions someone else wrote that shape what the assistant does on this
 machine — worth being able to look at.
 
-Read-only. Ownership is reported per entry, because an instruction file owned
-by somebody else is a different thing from one you wrote.
+Listing is read-only; the content of a plain instruction file can be edited
+from the interface, because seeing what steers a session and being unable to
+change it is only half of it. Ownership is reported per entry, because an
+instruction file owned by somebody else is a different thing from one you
+wrote -- and it decides whether editing is offered at all.
 """
 
 from __future__ import annotations
@@ -16,11 +19,13 @@ import json
 import os
 import pwd
 import stat
+import tempfile
 from datetime import datetime
 
 from .core import CLAUDE_DIR, HOME, PROJECTS_DIR, read_settings_file
 
 PREVIEW_BYTES = 4000        # enough to judge a file, small enough to render
+MAX_EDIT_BYTES = 1_000_000  # past this a text widget is the wrong tool
 
 
 def _encoded_project(path):
@@ -43,6 +48,16 @@ def _describe(path, scope, kind, origin="user"):
     except OSError as exc:
         body = f"<{exc}>"
     truncated = len(body) > PREVIEW_BYTES
+    # Why editing may not be on offer -- a translation key suffix, so the
+    # interface can say which of the reasons it is instead of a grey button.
+    if not os.path.isfile(path):
+        locked = "missing"
+    elif st.st_size > MAX_EDIT_BYTES:
+        locked = "too_large"
+    elif not os.access(path, os.W_OK):
+        locked = "permission"
+    else:
+        locked = None
     return {
         "path": path,
         "name": os.path.basename(path),
@@ -50,11 +65,14 @@ def _describe(path, scope, kind, origin="user"):
         "kind": kind,            # memory / instructions / agent / skill
         "bytes": st.st_size,
         "modified": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+        "mtime": st.st_mtime,    # to notice a change made elsewhere while open
         "owner": owner,
         "foreign": owner != pwd.getpwuid(os.getuid()).pw_name,
         "origin": origin,        # who controls it: user or org
         "preview": body[:PREVIEW_BYTES],
         "truncated": truncated,
+        "editable": locked is None,
+        "locked": locked,
     }
 
 
@@ -85,6 +103,62 @@ def _skills_in(directory, scope):
     return found
 
 
+def read_text(path):
+    """The whole file, strictly decoded.
+
+    The preview in an entry is capped and decoded with replacements -- fine to
+    look at, ruinous to write back. An editor needs the real thing, so a file
+    that is not valid UTF-8 raises here and stays read-only.
+    """
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def save_text(path, text):
+    """Replace the content of an existing instruction file.
+
+    Written beside the target and moved into place, so an interrupted write
+    cannot leave a half-written instruction file behind. Symlinks are resolved
+    first -- dotfiles are often symlinked into a checkout, and replacing the
+    link with a regular file would quietly detach it. Where the directory is
+    not writable the atomic route is impossible and the file is rewritten in
+    place instead.
+    """
+    path = os.path.realpath(path)
+    if not os.path.isfile(path):
+        raise OSError(f"not a file: {path}")
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    directory = os.path.dirname(path) or "."
+
+    if os.access(directory, os.W_OK):
+        handle, temporary = tempfile.mkstemp(dir=directory, prefix=".cpc-",
+                                             suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            os.chmod(temporary, mode)
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+    else:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    return os.stat(path).st_mtime
+
+
+def restat(entry):
+    """Refresh the fields that a write changed, in place."""
+    fresh = _describe(entry["path"], entry["scope"], entry["kind"], entry["origin"])
+    if fresh:
+        fresh["name"] = entry["name"]      # a skill carries its directory name
+        entry.update(fresh)
+    return entry
+
+
 def collect(project_dirs=()):
     """Every instruction source that applies, grouped by where it comes from."""
     me = pwd.getpwuid(os.getuid()).pw_name
@@ -102,10 +176,14 @@ def collect(project_dirs=()):
             entries.append({
                 "path": os.path.expanduser(source), "name": "claudeMd",
                 "scope": "org", "kind": "instructions", "bytes": len(str(pushed)),
-                "modified": "—", "owner": "—", "foreign": True, "origin": "org",
+                "modified": "—", "mtime": 0, "owner": "—", "foreign": True,
+                "origin": "org",
                 "preview": pushed if isinstance(pushed, str)
                 else json.dumps(pushed, ensure_ascii=False, indent=2),
                 "truncated": False,
+                # A value inside a settings file, not a file of its own -- and
+                # organisation policy besides. Not something to edit here.
+                "editable": False, "locked": "org",
             })
 
     # 2. User-wide instructions and definitions.

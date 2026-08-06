@@ -6,7 +6,7 @@ Views:
   Local data     inventory of the local history with per-entry deletion
   Working time   the timesheet the transcript timestamps add up to
   Observer view  what a mechanical triage over that data would surface
-  Instructions   instruction files loaded into sessions
+  Instructions   instruction files loaded into sessions, editable in place
 
 Meant for launching from a menu entry or by double-click, where terminal output
 would vanish immediately. Tkinter is imported here and nowhere else, so the CLI
@@ -109,6 +109,14 @@ class App:
         self.license = None
         self.worktime = None
         self.opened = set()   # instruction files with the body unfolded
+        # Editing an instruction file survives folding it away, switching tab
+        # and changing the language: the text lives in `drafts`, not in the
+        # widget, which any of those destroys.
+        self.drafts = {}      # path -> edited text that is not on disk yet
+        self.disk_text = {}   # path -> what was read from disk, to compare with
+        self.loaded_mtime = {}  # path -> mtime when read, to catch outside edits
+        self.editors = {}     # path -> the widgets of the open editor
+        self._syncing = False   # guard against the <<Modified>> reset re-firing
         self.license_open = set()  # licence sections with details unfolded
         self.view = start_view
         self.expanded = set()        # projects with the session list unfolded
@@ -140,7 +148,8 @@ class App:
         self._build_footer()
 
         root.bind("<F5>", lambda _e: self.refresh())
-        root.bind("<Escape>", lambda _e: root.destroy())
+        root.bind("<Escape>", lambda _e: self.close())
+        root.protocol("WM_DELETE_WINDOW", self.close)
         root.bind("<Next>", lambda _e: self.canvas.yview_scroll(1, "pages"))
         root.bind("<Prior>", lambda _e: self.canvas.yview_scroll(-1, "pages"))
         root.bind("<Home>", lambda _e: self.canvas.yview_moveto(0))
@@ -365,7 +374,7 @@ class App:
         self.btn_baseline.pack(side="left", padx=(8, 0))
         self.btn_json = self._button(row, t("btn.copy_json"), self.copy_json)
         self.btn_json.pack(side="left", padx=(8, 0))
-        self.btn_close = self._button(row, t("btn.close"), self.root.destroy)
+        self.btn_close = self._button(row, t("btn.close"), self.close)
         self.btn_close.pack(side="right")
 
     def _button(self, parent, text, command, primary=False, danger=False):
@@ -1199,8 +1208,19 @@ class App:
 
     # -------------------------------------------------- view: instructions
 
+    def _rules_warnings(self):
+        report = self.rules or {}
+        warnings = []
+        if report.get("org_controlled"):
+            warnings.append(t("instructions.org_warn", count=report["org_controlled"]))
+        if report.get("foreign_owner"):
+            warnings.append(t("instructions.foreign_warn",
+                              count=report["foreign_owner"]))
+        return " ".join(warnings)
+
     def render_rules(self):
         self._clear_body()
+        self.editors = {}            # the redraw destroyed every open editor
         report = self.rules
         if report is None:
             return
@@ -1210,13 +1230,7 @@ class App:
             text="  " + t("instructions.summary", count=len(report["entries"]),
                           size=data.human_bytes(report["total_bytes"])) + "  ",
             bg=self.c[tone])
-        warnings = []
-        if report["org_controlled"]:
-            warnings.append(t("instructions.org_warn", count=report["org_controlled"]))
-        if report["foreign_owner"]:
-            warnings.append(t("instructions.foreign_warn",
-                              count=report["foreign_owner"]))
-        self.status_line.configure(text=" ".join(warnings))
+        self._mark_dirty_count()     # falls back to the warnings when nothing is open
         if self.result is None:      # started directly in this view
             account, _mcp = core.collect_account_and_mcp()
             auth = core.collect_auth()
@@ -1267,6 +1281,12 @@ class App:
         name = tk.Label(head, text=entry["name"], font=self.f_head,
                         bg=self.c["card"], fg=self.c["fg"], anchor="w")
         name.pack(side="left", padx=(8, 0))
+        if entry["path"] in self.drafts:
+            # Folded away, the editor is out of sight; the card still has to
+            # say that something in it is waiting to be saved.
+            tk.Label(head, text="● " + t("instructions.unsaved"), font=self.f_small,
+                     bg=self.c["card"], fg=self.c["MEDIUM"]).pack(side="left",
+                                                                  padx=(8, 0))
 
         path = tk.Label(info, text=entry["path"], font=self.f_mono,
                         bg=self.c["card"], fg=self.c["muted"], anchor="w",
@@ -1285,14 +1305,248 @@ class App:
                          side="right", padx=(12, 0))
 
         if opened:
-            box = tk.Frame(card, bg=self.c["code_bg"])
-            box.pack(fill="x", padx=14, pady=(0, 12))
-            body = entry["preview"] + (
-                "\n" + t("instructions.truncated") if entry["truncated"] else "")
-            content = tk.Label(box, text=body, font=self.f_mono, bg=self.c["code_bg"],
-                               fg=self.c["fg"], anchor="w", justify="left")
-            content.pack(fill="x", padx=10, pady=8)
-            self.wrappable.append((content, 100))
+            self._rule_editor(card, entry)
+
+    # ---------------------------------------------- instruction file editing
+
+    def _editor_content(self, entry):
+        """(text, lock) for the body of an entry.
+
+        ``lock`` is a translation key suffix naming why the text cannot be
+        written back, or None when it can. The preview an entry carries is
+        capped and lossily decoded, so it is only used where the real file is
+        out of reach anyway.
+        """
+        path, locked = entry["path"], entry.get("locked")
+        if locked in ("org", "too_large", "missing"):
+            return entry["preview"], locked
+        try:
+            text = instructions.read_text(path)
+        except UnicodeDecodeError:
+            return entry["preview"], "encoding"
+        except OSError as exc:
+            return f"<{exc}>", "unreadable"
+        self.disk_text[path] = text
+        if path not in self.drafts:
+            try:
+                self.loaded_mtime[path] = os.path.getmtime(path)
+            except OSError:
+                pass
+            return text, locked
+        return self.drafts[path], locked
+
+    def _rule_editor(self, card, entry):
+        """The content of an instruction file: selectable always, writable
+        where it is a plain file this user is allowed to change."""
+        path = entry["path"]
+        text, lock = self._editor_content(entry)
+        editable = lock is None
+        if not editable and entry["truncated"]:
+            text += "\n" + t("instructions.truncated")
+
+        box = tk.Frame(card, bg=self.c["code_bg"])
+        box.pack(fill="x", padx=14, pady=(0, 10))
+        # A read-only body is sized to what it is; one that can be typed into
+        # gets room to type in, and neither grows past a screenful.
+        lines = text.count("\n") + 1
+        height = min(30, max(6, lines + 1) if editable else max(3, lines))
+        widget = tk.Text(box, height=height, wrap="word",
+                         font=self.f_mono, bg=self.c["code_bg"], fg=self.c["fg"],
+                         insertbackground=self.c["fg"],
+                         selectbackground=self.c["accent"],
+                         selectforeground=self.c["chip_fg"],
+                         relief="flat", highlightthickness=0, bd=0,
+                         padx=10, pady=8, undo=True, maxundo=200)
+        # Wrapping means the line count is only a guess at how tall the text
+        # really is, so the scrollbar decides for itself whether it is needed.
+        bar = tk.Scrollbar(box, orient="vertical", command=widget.yview)
+        widget.configure(yscrollcommand=lambda first, last, b=bar:
+                         self._editor_scrollbar(b, first, last))
+        widget.pack(side="left", fill="both", expand=True)
+        widget.insert("1.0", text)
+        widget.edit_reset()
+        widget.edit_modified(False)
+
+        # Only the widget's own and the Text class bindings, so that typing in
+        # here does not also reach the page: the arrow keys scroll the view and
+        # Escape closes the window.
+        widget.bindtags((str(widget), "Text"))
+        widget.bind("<Escape>", lambda _e: (self.canvas.focus_set(), "break")[1])
+        widget.bind("<Control-a>", self._select_all)
+        for seq, delta in (("<Button-4>", -1), ("<Button-5>", 1)):
+            widget.bind(seq, lambda _e, w=widget, d=delta: self._editor_wheel(w, d))
+        widget.bind("<MouseWheel>",
+                    lambda e, w=widget: self._editor_wheel(w, -1 if e.delta > 0 else 1))
+        if editable:
+            widget.bind("<<Modified>>",
+                        lambda _e, en=entry, w=widget: self._editor_changed(en, w))
+            widget.bind("<Control-s>",
+                        lambda _e, en=entry: (self.save_rule(en), "break")[1])
+        else:
+            widget.bind("<Key>", self._readonly_key)
+            for virtual in ("<<Paste>>", "<<Cut>>", "<<Clear>>", "<<PasteSelection>>",
+                            "<<Undo>>", "<<Redo>>"):
+                widget.bind(virtual, lambda _e: "break")
+            widget.bind("<Button-2>", lambda _e: "break")   # X11 middle-click paste
+
+        row = tk.Frame(card, bg=self.c["card"])
+        row.pack(fill="x", padx=14, pady=(0, 12))
+        self._button(row, t("btn.copy"),
+                     lambda p=path: self.copy_rule(p)).pack(side="left")
+        save = revert = None
+        if editable:
+            save = self._button(row, t("btn.save"), lambda en=entry: self.save_rule(en),
+                                primary=True)
+            save.pack(side="left", padx=(8, 0))
+            revert = self._button(row, t("btn.revert"),
+                                  lambda en=entry: self.revert_rule(en))
+            revert.pack(side="left", padx=(8, 0))
+        note = tk.Label(row, text="", font=self.f_small, bg=self.c["card"],
+                        fg=self.c["muted"], anchor="w", justify="left")
+        note.pack(side="left", padx=(12, 0), fill="x", expand=True)
+        self.wrappable.append((note, 320))
+
+        self.editors[path] = {"text": widget, "note": note, "revert": revert,
+                              "save": save, "lock": lock}
+        self._editor_note(entry)
+
+    def _editor_note(self, entry):
+        """The line beside the buttons: why it is read-only, or that it is
+        edited and not saved."""
+        state = self.editors.get(entry["path"])
+        if state is None:
+            return
+        dirty = entry["path"] in self.drafts
+        if state["lock"]:
+            state["note"].configure(text=t("instructions.readonly." + state["lock"]),
+                                    fg=self.c["muted"])
+        elif dirty:
+            state["note"].configure(text=t("instructions.unsaved_hint"),
+                                    fg=self.c["MEDIUM"])
+        else:
+            state["note"].configure(text=t("instructions.editor_hint"),
+                                    fg=self.c["muted"])
+        if state["revert"] is not None:
+            state["revert"].configure(state="normal" if dirty else "disabled")
+
+    def _editor_changed(self, entry, widget):
+        """Keep the edited text where a redraw cannot destroy it."""
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            widget.edit_modified(False)
+        finally:
+            self._syncing = False
+        path = entry["path"]
+        text = widget.get("1.0", "end-1c")
+        was_dirty = path in self.drafts
+        if text == self.disk_text.get(path):
+            self.drafts.pop(path, None)
+        else:
+            self.drafts[path] = text
+        self._editor_note(entry)
+        if (path in self.drafts) != was_dirty:
+            self._mark_dirty_count()
+
+    def _mark_dirty_count(self):
+        """The header carries the count, so unsaved work is visible from any
+        scroll position."""
+        if self.view != "instructions":
+            return
+        pending = sum(1 for e in (self.rules or {}).get("entries", ())
+                      if e["path"] in self.drafts)
+        self.status_line.configure(
+            text=t("instructions.unsaved_count", count=pending) if pending
+            else self._rules_warnings())
+
+    @staticmethod
+    def _editor_scrollbar(bar, first, last):
+        """Present only while the body has somewhere to scroll to."""
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            bar.pack_forget()
+        else:
+            bar.pack(side="right", fill="y")
+        bar.set(first, last)
+
+    def _editor_wheel(self, widget, delta):
+        """Scroll the page when the editor itself has nowhere to go."""
+        first, last = widget.yview()
+        if first <= 0.0 and last >= 1.0:
+            self.canvas.yview_scroll(delta * 3, "units")
+            return "break"
+        return None                      # the Text class binding scrolls it
+
+    def _select_all(self, event):
+        event.widget.tag_add("sel", "1.0", "end-1c")
+        return "break"
+
+    # Moving around and copying stay available where writing does not.
+    READONLY_KEYS = frozenset({
+        "Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next",
+        "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+    })
+
+    def _readonly_key(self, event):
+        if event.keysym in self.READONLY_KEYS:
+            return None
+        if event.state & 0x4 and event.keysym.lower() in ("c", "a", "insert"):
+            return None
+        return "break"
+
+    def copy_rule(self, path):
+        """Selection if there is one, otherwise the whole file."""
+        state = self.editors.get(path)
+        if state is None:
+            return
+        widget = state["text"]
+        try:
+            text = widget.get("sel.first", "sel.last")
+        except tk.TclError:
+            text = widget.get("1.0", "end-1c")
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.status_line.configure(text=t("status.copied"))
+
+    def save_rule(self, entry):
+        path = entry["path"]
+        state = self.editors.get(path)
+        if state is None or state["lock"]:
+            return
+        text = state["text"].get("1.0", "end-1c")
+        if entry["foreign"] and not messagebox.askyesno(
+                t("app.title"), t("instructions.foreign_confirm",
+                                  name=entry["name"], owner=entry["owner"])):
+            return
+        try:
+            outside = os.path.getmtime(path) != self.loaded_mtime.get(path)
+        except OSError:
+            outside = False
+        if outside and not messagebox.askyesno(
+                t("app.title"), t("instructions.changed_outside", name=entry["name"])):
+            return
+        try:
+            self.loaded_mtime[path] = instructions.save_text(path, text)
+        except (OSError, UnicodeError) as exc:      # noqa: BLE001 -- shown in the UI
+            messagebox.showerror(t("app.title"),
+                                 t("instructions.save_failed", error=exc))
+            return
+        self.drafts.pop(path, None)
+        self.disk_text[path] = text
+        instructions.restat(entry)
+        self.rules["total_bytes"] = sum(e["bytes"] for e in self.rules["entries"])
+        self.render_rules()
+        self.status_line.configure(text=t("instructions.saved", name=entry["name"]))
+
+    def revert_rule(self, entry):
+        path = entry["path"]
+        if path not in self.drafts:
+            return
+        if not messagebox.askyesno(t("app.title"),
+                                   t("instructions.revert_confirm", name=entry["name"])):
+            return
+        self.drafts.pop(path, None)
+        self.render_rules()
 
     def toggle_rule(self, path):
         self.opened.symmetric_difference_update({path})
@@ -1325,6 +1579,10 @@ class App:
             messagebox.showerror(t("app.title"), t("error.data_failed", error=error))
             return
         self.rules = report
+        # A file that has gone since it was opened cannot be saved to, and its
+        # draft would otherwise sit in the close warning forever.
+        for path in [p for p in self.drafts if not os.path.exists(p)]:
+            self.drafts.pop(path, None)
         self.render_rules()
 
     # ------------------------------------------------------------- actions
@@ -1574,6 +1832,16 @@ class App:
         y = self.root.winfo_rooty() + 120
         dialog.geometry(f"+{max(0, x)}+{max(0, y)}")
         dialog.grab_set()
+
+    def close(self):
+        """Escape and the window button both land here -- an edited
+        instruction file that was never saved should not leave without a
+        word."""
+        if self.drafts and not messagebox.askyesno(
+                t("app.title"), t("instructions.discard_on_close",
+                                  count=len(self.drafts))):
+            return
+        self.root.destroy()
 
     def copy_json(self):
         payload = ({"check": self.result, "license": self.license, "data": self.data,

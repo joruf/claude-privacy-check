@@ -25,6 +25,10 @@ DYNAMIC_KEYS = (
     | {f"status.{s}" for s in ("OK", "CHANGED", "CRITICAL", "NO_BASELINE")}
     | {f"status.detail.{s}" for s in ("OK", "CHANGED", "CRITICAL", "NO_BASELINE")}
     | {f"weekday.{n}" for n in range(7)}
+    # Why an instruction file is not editable -- instructions.py decides which
+    # one it is, the interface renders it.
+    | {f"instructions.readonly.{r}" for r in
+       ("org", "permission", "too_large", "missing", "encoding", "unreadable")}
 )
 
 

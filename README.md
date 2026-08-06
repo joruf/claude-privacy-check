@@ -186,6 +186,15 @@ organisation can push its own through the `claudeMd` setting. This view lists
 what applies, where it comes from and who owns it, and shows each file. Anything
 org-pushed or owned by another user is flagged.
 
+The content of a plain instruction file can be edited in place and saved there —
+`Ctrl+S`, or the button. Every body is selectable and has a **Copy** button
+whether or not it can be written. What is not editable says why: the org-pushed
+`claudeMd` lives in a settings file rather than one of its own, and a file
+without write permission, one that is not valid UTF-8 or one over 1 MB is shown
+read-only. Writes go through a temporary file next to the target and keep the
+file's mode; a symlinked instruction file stays a symlink. A file changed by
+something else since it was opened asks before it is overwritten.
+
 ### Continuous monitoring
 
 ```bash
