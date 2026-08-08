@@ -17,14 +17,14 @@ from claude_privacy_check.about import (                          # noqa: E402
 
 class AboutConstants(unittest.TestCase):
     def test_normalize_adds_https_when_missing(self):
-        self.assertEqual(normalize_about_url("loresoft.de"), "https://loresoft.de")
+        self.assertEqual(normalize_about_url("www.loresoft.de"), "https://www.loresoft.de")
 
     def test_normalize_keeps_an_existing_scheme(self):
         for url in ("https://example.org", "http://example.org"):
             self.assertEqual(normalize_about_url(url), url)
 
     def test_normalize_trims_whitespace(self):
-        self.assertEqual(normalize_about_url("  loresoft.de  "), "https://loresoft.de")
+        self.assertEqual(normalize_about_url("  www.loresoft.de  "), "https://www.loresoft.de")
 
     def test_normalize_handles_empty_input(self):
         self.assertEqual(normalize_about_url("   "), "")

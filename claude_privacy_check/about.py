@@ -13,7 +13,7 @@ APP_VERSION = __version__
 APP_LICENSE = "Apache-2.0"
 
 ABOUT_AUTHOR = "Joachim Ruf"
-ABOUT_WEBSITE = "loresoft.de"
+ABOUT_WEBSITE = "www.loresoft.de"
 ABOUT_GITHUB = "https://github.com/joruf/claude-privacy-check"
 
 
