@@ -305,7 +305,7 @@ python3 -m unittest discover -s tests -v
 
 ![About dialog](docs/screenshots/about.png)
 
-Author: **Joachim Ruf** · [loresoft.de](https://loresoft.de) ·
+Author: **Joachim Ruf** · [loresoft.de](https://www.loresoft.de) ·
 [github.com/joruf/claude-privacy-check](https://github.com/joruf/claude-privacy-check)
 
 ## Licence
