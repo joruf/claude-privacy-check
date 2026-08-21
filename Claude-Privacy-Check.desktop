@@ -1,10 +1,11 @@
 [Desktop Entry]
+Version=1.0
 Type=Application
 Name=Claude Privacy Check
 Comment=Check whether your organisation is capturing Claude Code prompts
 Comment[de]=Prüft, ob die Organisation Claude Code mitschneidet
-# %k is this .desktop file. run.py lives in the project root, one directory up.
-Exec=/bin/bash -c "cd \\$(dirname \\$(readlink -f \\$0))/.. && exec python3 ./run.py" %k
+# %k is this .desktop file, so ./run.py is always the one in the same folder.
+Exec=/bin/bash -c "cd \\$(dirname \\$(readlink -f \\$0)) && exec python3 ./run.py" %k
 Icon=claude-privacy-check
 Terminal=false
 Categories=System;Security;

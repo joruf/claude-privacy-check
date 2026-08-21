@@ -20,7 +20,7 @@ BIN_DIR = os.path.join(HOME, ".local", "bin")
 LINK = os.path.join(BIN_DIR, "claude-privacy-check")
 DESKTOP_DIR = os.path.join(HOME, ".local", "share", "applications")
 DESKTOP_FILE = os.path.join(DESKTOP_DIR, "claude-privacy-check.desktop")
-DESKTOP_TEMPLATE = os.path.join(APP_DIR, "packaging", "claude-privacy-check.desktop")
+DESKTOP_TEMPLATE = os.path.join(APP_DIR, "Claude-Privacy-Check.desktop")
 HICOLOR = os.path.join(
     os.environ.get("XDG_DATA_HOME") or os.path.join(HOME, ".local", "share"),
     "icons", "hicolor")
@@ -45,14 +45,10 @@ def _desktop_ok():
             text = fh.read()
     except OSError:
         return False
-    return RUN_PY in text and f"Icon={ICON_NAME}" in text
+    return "%k" in text and "run.py" in text and f"Icon={ICON_NAME}" in text
 
 
 def _icons_ok():
-    for size in SIZES:
-        path = os.path.join(HICOLOR, f"{size}x{size}", "apps", f"{ICON_NAME}.png")
-        if not os.path.isfile(path):
-            return False
     svg = os.path.join(HICOLOR, "scalable", "apps", f"{ICON_NAME}.svg")
     return os.path.isfile(svg)
 
@@ -91,13 +87,16 @@ def _install_link():
 def _install_icons():
     for size in SIZES:
         src = os.path.join(ICONS_DIR, f"{ICON_NAME}-{size}.png")
+        if not os.path.isfile(src):
+            continue
         dest_dir = os.path.join(HICOLOR, f"{size}x{size}", "apps")
         os.makedirs(dest_dir, exist_ok=True)
         shutil.copy2(src, os.path.join(dest_dir, f"{ICON_NAME}.png"))
     svg_src = os.path.join(ICONS_DIR, f"{ICON_NAME}.svg")
-    svg_dir = os.path.join(HICOLOR, "scalable", "apps")
-    os.makedirs(svg_dir, exist_ok=True)
-    shutil.copy2(svg_src, os.path.join(svg_dir, f"{ICON_NAME}.svg"))
+    if os.path.isfile(svg_src):
+        svg_dir = os.path.join(HICOLOR, "scalable", "apps")
+        os.makedirs(svg_dir, exist_ok=True)
+        shutil.copy2(svg_src, os.path.join(svg_dir, f"{ICON_NAME}.svg"))
     cache = shutil.which("gtk-update-icon-cache")
     if cache:
         subprocess.run([cache, "-f", "-t", HICOLOR],
@@ -106,10 +105,10 @@ def _install_icons():
 
 def _install_desktop():
     os.makedirs(DESKTOP_DIR, exist_ok=True)
-    with open(DESKTOP_TEMPLATE, encoding="utf-8") as fh:
-        text = fh.read().replace("@APPDIR@", APP_DIR)
-    with open(DESKTOP_FILE, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    if os.path.lexists(DESKTOP_FILE):
+        os.remove(DESKTOP_FILE)
+    os.symlink(DESKTOP_TEMPLATE, DESKTOP_FILE)
+    os.chmod(DESKTOP_TEMPLATE, os.stat(DESKTOP_TEMPLATE).st_mode | 0o111)
     upd = shutil.which("update-desktop-database")
     if upd:
         subprocess.run([upd, DESKTOP_DIR], capture_output=True, check=False)
