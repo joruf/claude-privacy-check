@@ -6,10 +6,10 @@ without starting Tk, the same way the other projects here do it.
 
 from __future__ import annotations
 
-from . import __version__
+from . import VERSION_LABEL, __version__
 
 APP_NAME = "Claude Privacy Check"
-APP_VERSION = __version__
+APP_VERSION = VERSION_LABEL
 APP_LICENSE = "Apache-2.0"
 
 ABOUT_AUTHOR = "Joachim Ruf"
