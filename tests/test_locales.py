@@ -29,13 +29,18 @@ DYNAMIC_KEYS = (
     # one it is, the interface renders it.
     | {f"instructions.readonly.{r}" for r in
        ("org", "permission", "too_large", "missing", "encoding", "unreadable")}
+    # The telemetry scan names its categories, the kind of local name it matched
+    # and what device_id turned out to be -- all assembled from the report.
+    | {f"telemetry.cat.{c}" for c in ("path", "project", "account", "secret")}
+    | {f"telemetry.kind.{k}" for k in ("skill", "agent", "command")}
+    | {f"telemetry.device_id.{k}" for k in ("user", "machine", "unknown")}
 )
 
 
 def verdict_keys():
     """Conclusions the modules return as a key for the output layer to render."""
     found = set()
-    for name in ("observer.py", "worktime.py", "license.py"):
+    for name in ("observer.py", "worktime.py", "license.py", "telemetry.py"):
         source = (PKG / name).read_text(encoding="utf-8")
         found |= set(re.findall(r'"(\w+\.verdict\.\w+)"', source))
     return found

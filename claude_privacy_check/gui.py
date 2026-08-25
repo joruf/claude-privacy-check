@@ -6,6 +6,7 @@ Views:
   Local data     inventory of the local history with per-entry deletion
   Working time   the timesheet the transcript timestamps add up to
   Observer view  what a mechanical triage over that data would surface
+  Telemetry      the events queued to leave this machine for Anthropic
   Instructions   instruction files loaded into sessions, editable in place
 
 Meant for launching from a menu entry or by double-click, where terminal output
@@ -26,7 +27,7 @@ from tkinter import font as tkfont
 from tkinter import messagebox
 
 from . import (about, core, data, instructions, license as licence, observer,
-               worktime)
+               telemetry, worktime)
 from .icons import SIZES, icon_png
 from .i18n import (available_languages, current_language, save_preference,
                    set_language, t)
@@ -37,6 +38,7 @@ NAV_TABS = (
     ("data", "nav.data"),
     ("worktime", "nav.worktime"),
     ("observer", "nav.observer"),
+    ("telemetry", "nav.telemetry"),
     ("instructions", "nav.instructions"),
 )
 
@@ -108,6 +110,7 @@ class App:
         self.rules = None
         self.license = None
         self.worktime = None
+        self.telemetry = None
         self.opened = set()   # instruction files with the body unfolded
         # Editing an instruction file survives folding it away, switching tab
         # and changing the language: the text lives in `drafts`, not in the
@@ -322,9 +325,9 @@ class App:
 
         self.tabs = {}
         for key, label_key in NAV_TABS:
-            # Tighter than it looks comfortable at: six tabs have to fit the
+            # Tighter than it looks comfortable at: seven tabs have to fit the
             # minimum window width, and a clipped tab is worse than a narrow one.
-            btn = tk.Label(row, text=t(label_key), font=self.f_head, padx=9, pady=6,
+            btn = tk.Label(row, text=t(label_key), font=self.f_head, padx=6, pady=6,
                            cursor="hand2", bg=self.c["card"], fg=self.c["muted"])
             btn.pack(side="left", padx=(0, 3))
             btn.bind("<Button-1>", lambda _e, k=key: self.switch(k))
@@ -1206,6 +1209,184 @@ class App:
         self.report = report
         self.render_observer()
 
+    # ---------------------------------------------------- view: telemetry
+
+    def render_telemetry(self):
+        self._clear_body()
+        report = self.telemetry
+        if report is None:
+            return
+
+        verdict = telemetry.verdict_key(report)
+        tone = "CRITICAL" if verdict.endswith(("secret", "identifiers")) else \
+               "INFO" if verdict.endswith("empty") else "OK"
+        self.chip.configure(text=f"  {t('telemetry.chip')}  ", bg=self.c[tone])
+        self.status_line.configure(text=t(verdict))
+        self.subtitle.configure(
+            text=self._account_line(report.get("account") or {}, core.collect_auth()))
+
+        self._section(t("telemetry.section.summary"))
+        if not report["exists"]:
+            self._note_card(t("telemetry.summary.missing"))
+            return
+        if not report["events"]:
+            self._note_card(t("telemetry.summary.empty"))
+            return
+
+        self._stat_tiles([
+            (str(report["files"]), t("telemetry.stat.files"), "fg"),
+            (str(report["events"]), t("telemetry.stat.events"), "fg"),
+            (data.human_bytes(report["bytes"]), t("telemetry.stat.size"), "fg"),
+            (str(len(report["fields"])), t("telemetry.stat.fields"), "fg"),
+            (report["oldest"] or "—", t("telemetry.stat.oldest"), "fg"),
+            (report["newest"] or "—", t("telemetry.stat.newest"), "fg"),
+        ])
+        note = t("telemetry.retry_note")
+        if report["truncated"]:
+            note += "\n" + t("telemetry.truncated",
+                             size=data.human_bytes(telemetry.MAX_BYTES))
+        if report["unreadable"]:
+            note += "\n" + t("telemetry.unreadable", count=report["unreadable"])
+        self._note_card(note)
+
+        self._section(t("telemetry.section.scan"))
+        for category in report["categories"]:
+            self._telemetry_scan_card(category)
+        self._note_card(t("telemetry.scan.note") + "\n"
+                        + t("telemetry.scan.secret_note"))
+
+        self._section(t("telemetry.section.device"))
+        self._telemetry_kv_card(report["device"])
+        self._note_card(t("telemetry.device.note"))
+
+        self._section(t("telemetry.section.identity"))
+        self._telemetry_kv_card(report["identity"])
+        identity_note = t("telemetry.identity.note")
+        if report["device_id_kind"]:
+            identity_note += "\n" + t("telemetry.device_id." + report["device_id_kind"])
+        self._note_card(identity_note)
+
+        self._section(t("telemetry.section.local_names"),
+                      t("count.names", n=len(report["local_names"]))
+                      if report["local_names"] else "")
+        if report["local_names"]:
+            self._telemetry_kv_card([
+                {"path": entry["name"],
+                 "value": t("telemetry.local_names.row", count=entry["count"],
+                            kind=t("telemetry.kind." + entry["kind"]),
+                            field=entry["field"])}
+                for entry in report["local_names"]])
+        else:
+            self._ok_card(t("telemetry.local_names.none"))
+        self._note_card(t("telemetry.local_names.note"))
+
+        self._section(t("telemetry.section.events"),
+                      t("count.events", n=len(report["event_names"])))
+        self._telemetry_kv_card([{"path": e["name"], "value": str(e["count"])}
+                                 for e in report["event_names"]])
+        self._note_card(t("telemetry.events.note"))
+
+        if report["decoded"]:
+            self._section(t("telemetry.section.decoded"))
+            for entry in report["decoded"]:
+                card = self._card()
+                tk.Label(card, text=entry["path"], font=self.f_small,
+                         bg=self.c["card"], fg=self.c["fg"], anchor="w").pack(
+                             fill="x", padx=14, pady=(10, 2))
+                body = tk.Label(card, text=entry["sample"], font=self.f_mono,
+                                bg=self.c["code_bg"], fg=self.c["fg"], anchor="w",
+                                justify="left")
+                body.pack(fill="x", padx=14, pady=(0, 12))
+                self.wrappable.append((body, 90))
+            self._note_card(t("telemetry.decoded.note"))
+
+        self._section(t("telemetry.section.fields"),
+                      t("count.fields", n=len(report["fields"])))
+        self._telemetry_kv_card([{"path": e["path"], "value": e["sample"] or "—"}
+                                 for e in report["fields"]])
+        self._note_card(t("telemetry.fields.note"))
+        tk.Frame(self.body, bg=self.c["bg"], height=12).pack()
+
+    def _telemetry_kv_card(self, rows):
+        """Name on the left, value on the right, one row each.
+
+        The value is monospaced and clipped by the widget rather than by us: a
+        hash that runs off the edge still reads as a hash, and truncating it in
+        the string would hide how long it is.
+        """
+        card = self._card()
+        tk.Frame(card, bg=self.c["card"], height=6).pack()
+        for row in rows:
+            line = tk.Frame(card, bg=self.c["card"])
+            line.pack(fill="x", padx=14, pady=1)
+            tk.Label(line, text=row["path"], font=self.f_small, bg=self.c["card"],
+                     fg=self.c["fg"], anchor="w").pack(side="left")
+            tk.Label(line, text=row["value"], font=self.f_mono, bg=self.c["card"],
+                     fg=self.c["muted"], anchor="e").pack(side="right", padx=(12, 0))
+        tk.Frame(card, bg=self.c["card"], height=8).pack()
+
+    def _telemetry_scan_card(self, category):
+        card = self._card()
+        top = tk.Frame(card, bg=self.c["card"])
+        top.pack(fill="x", padx=14, pady=(12, 4))
+        hit = bool(category["count"])
+        tone = "CRITICAL" if hit else "OK"
+        tk.Label(top, text=" ! " if hit else " ✓ ", font=self.f_chip,
+                 bg=self.c[tone], fg=self.c["chip_fg"], padx=4, pady=2).pack(side="left")
+        tk.Label(top, text=t(category["key"]), font=self.f_head, bg=self.c["card"],
+                 fg=self.c["fg"], anchor="w").pack(side="left", padx=(10, 0))
+
+        summary = t("telemetry.scan.hit", count=category["count"],
+                    literals=", ".join(category["literals"]) or "—") if hit \
+            else t("telemetry.scan.clean")
+        tk.Label(card, text=summary, font=self.f_small, bg=self.c["card"],
+                 fg=self.c["muted"], anchor="w").pack(fill="x", padx=14, pady=(0, 8))
+
+        for sample in category["samples"]:
+            excerpt = tk.Label(card, text=sample, font=self.f_mono,
+                               bg=self.c["code_bg"], fg=self.c["fg"], anchor="w",
+                               justify="left")
+            excerpt.pack(fill="x", padx=14, pady=(0, 4))
+            self.wrappable.append((excerpt, 90))
+        tk.Frame(card, bg=self.c["card"], height=6).pack()
+
+    def reload_telemetry(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.show_loading(t("loading.telemetry.title"), t("loading.telemetry.detail"))
+        self.btn_refresh.configure(state="disabled")
+        self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
+
+        def note(done, total):
+            # Called from the worker thread; hand it to Tk's thread.
+            text = t("telemetry.scanning", done=done, total=total)
+            share = (done / total) if total else None
+            self.root.after(0, lambda: (self.status_line.configure(text=text),
+                                        self.update_loading(text, share)))
+
+        def work():
+            try:
+                account = core.collect_account_and_mcp()[0]
+                payload = telemetry.build_report(account, progress=note)
+                payload["account"] = account
+                error = None
+            except Exception as exc:               # noqa: BLE001 -- surfaced in the UI
+                payload, error = None, exc
+            self.root.after(0, lambda: self._telemetry_done(payload, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _telemetry_done(self, report, error):
+        self.hide_loading()
+        self.busy = False
+        self.btn_refresh.configure(state="normal")
+        if error is not None:
+            messagebox.showerror(t("app.title"), t("error.data_failed", error=error))
+            return
+        self.telemetry = report
+        self.render_telemetry()
+
     # -------------------------------------------------- view: instructions
 
     def _rules_warnings(self):
@@ -1607,6 +1788,7 @@ class App:
             else t("license.intro") if view == "license"
             else t("worktime.intro") if view == "worktime"
             else t("observer.intro") if view == "observer"
+            else t("telemetry.intro") if view == "telemetry"
             else t("instructions.intro") if view == "instructions"
             else t("delete.note"))
         self.btn_refresh.configure(text=t("btn.recheck") if view == "check"
@@ -1620,6 +1802,9 @@ class App:
             self.reload_license() if self.license is None else self.render_license()
         elif view == "observer":
             self.reload_observer() if self.report is None else self.render_observer()
+        elif view == "telemetry":
+            self.reload_telemetry() if self.telemetry is None \
+                else self.render_telemetry()
         elif view == "instructions":
             self.reload_rules() if self.rules is None else self.render_rules()
         else:
@@ -1641,6 +1826,10 @@ class App:
         if self.view == "observer":
             self.report = None
             self.reload_observer()
+            return
+        if self.view == "telemetry":
+            self.telemetry = None
+            self.reload_telemetry()
             return
         if self.view == "instructions":
             self.rules = None
