@@ -18,6 +18,7 @@ import pwd
 import re
 import shutil
 import stat
+import time
 from datetime import datetime, timezone
 
 from . import telemetry as telemetry_queue
@@ -149,6 +150,36 @@ def truthy(value):
 # Collection
 # --------------------------------------------------------------------------
 
+# A settings file is not written atomically by everyone who writes one, and the
+# watch reacts to the write itself: the half-written and the momentarily empty
+# state are the normal case, not a finding. Reading one of them and calling it
+# a parse error raises an alarm about the very file the server just delivered.
+# Each failure is therefore given time to settle before it counts. The cost is
+# paid only when a file does not parse.
+RETRY_DELAYS = (0.15, 0.4)      # seconds between re-reads
+
+
+def _load_json(path):
+    """Parse a settings file, allowing a write in progress to finish.
+
+    An empty file that stays empty is treated as no content rather than as a
+    broken one -- there is nothing in it to parse, and nothing configured by
+    it either. Anything else that still does not parse raises, as it should.
+    """
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+        if raw.strip():
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                if attempt == len(RETRY_DELAYS):
+                    raise
+        elif attempt == len(RETRY_DELAYS):
+            return {}
+        time.sleep(RETRY_DELAYS[attempt])
+
+
 def read_settings_file(path, skip_if_missing=False):
     """Read a settings file including owner and mode.
 
@@ -169,8 +200,7 @@ def read_settings_file(path, skip_if_missing=False):
     except OSError as exc:
         entry["stat_error"] = str(exc)
     try:
-        with open(real, encoding="utf-8") as fh:
-            entry["content"] = json.load(fh)
+        entry["content"] = _load_json(real)
     except json.JSONDecodeError as exc:
         entry["parse_error"] = str(exc)
     except OSError as exc:
@@ -618,6 +648,35 @@ def path_severity(path):
 
 MISSING = "∅"     # marks "key absent on this side" in a diff
 
+# What counts as "nothing is configured here any more". Lists and dicts reach
+# the diff as JSON text, so their empty forms are strings by the time we see
+# them.
+BLANK = (MISSING, "", "null", "None", "[]", "{}", "false")
+
+
+def is_blank(value):
+    """Does this value amount to nothing being set?"""
+    if isinstance(value, str):
+        return value.strip().lower() in BLANK
+    return value is None or value is False or value == 0 or value in ([], {})
+
+
+def change_severity(path, after):
+    """How loud a single change deserves to be.
+
+    ``path_severity`` judges the path alone, which is right for a value that
+    appeared: a hook, a base URL, a monitoring notice. It is wrong for one that
+    vanished. A ``monitoring_notice`` going from a text to nothing, or a key
+    disappearing while the file it lives in is rewritten, is not a sign of
+    capture -- and raising the loudest alarm this tool has for it teaches
+    people to ignore the alarm. A change to nothing is therefore capped at
+    MEDIUM: still reported, never urgent.
+    """
+    severity = path_severity(path)
+    if is_blank(after) and SEV_ORDER[severity] > SEV_ORDER["MEDIUM"]:
+        return "MEDIUM"
+    return severity
+
 
 def diff(old, new):
     flat_old = {k: v for k, v in flatten(old).items()
@@ -629,7 +688,7 @@ def diff(old, new):
         before, after = flat_old.get(key, MISSING), flat_new.get(key, MISSING)
         if before != after:
             changes.append({"path": key, "before": before, "after": after,
-                            "severity": path_severity(key)})
+                            "severity": change_severity(key, after)})
     changes.sort(key=lambda c: -SEV_ORDER[c["severity"]])
     return changes
 

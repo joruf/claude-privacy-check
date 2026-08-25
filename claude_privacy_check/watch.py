@@ -90,20 +90,41 @@ WantedBy=timers.target
 
 # ------------------------------------------------------------- notification
 
+# Severities worth interrupting somebody for. INFO and MEDIUM belong in the
+# report, not in a popup.
+LOUD = ("HIGH", "CRITICAL")
+
+# Parameters that say how much, not what. A queue that grew from three hits to
+# four is the same finding; re-announcing it every time the number moves is how
+# a warning becomes wallpaper. What was found decides whether it is new, not
+# how often it was found.
+VOLATILE_PARAMS = ("count", "events", "files")
+
+
+def _identity(finding):
+    """What makes a finding *this* finding, for the once-per-session marker."""
+    stable = {k: v for k, v in finding["params"].items()
+              if k not in VOLATILE_PARAMS}
+    return (finding["severity"], finding["key"],
+            json.dumps(stable, sort_keys=True, default=str))
+
+
 def notify_check():
     """Check, and warn at most once per session about monitoring.
 
-    Only signals that actually point at capture are reported: every finding of
-    the assessment, plus deviations at HIGH or CRITICAL. Harmless deviations
-    (own settings, permissions, plugins) stay silent but remain visible in the
-    CLI and the window.
+    Only signals that actually point at capture are reported: findings and
+    deviations at HIGH or CRITICAL. Everything else -- a paid plan, the length
+    of the telemetry queue, own settings, permissions, plugins -- stays silent
+    but remains visible in the CLI and the window. An interruption that turns
+    out to be a standing state is one people learn to click away, and the next
+    one is then clicked away too.
     """
     result = core.run_check()
     code = core.exit_code(result)
 
-    findings = result["findings"]
+    findings = [f for f in result["findings"] if f["severity"] in LOUD]
     alerts = [c for c in (result["changes"] or [])
-              if c["severity"] in ("HIGH", "CRITICAL")]
+              if c["severity"] in LOUD]
     critical = (any(f["severity"] == "CRITICAL" for f in findings)
                 or any(c["severity"] == "CRITICAL" for c in alerts))
 
@@ -115,8 +136,7 @@ def notify_check():
         return code
 
     fingerprint = json.dumps(
-        {"findings": sorted((f["severity"], f["key"], str(f["params"]))
-                            for f in findings),
+        {"findings": sorted(_identity(f) for f in findings),
          "alerts": sorted((c["severity"], c["path"], str(c["after"])) for c in alerts)},
         sort_keys=True)
     if fingerprint in seen:

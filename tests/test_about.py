@@ -29,9 +29,23 @@ class AboutConstants(unittest.TestCase):
     def test_normalize_handles_empty_input(self):
         self.assertEqual(normalize_about_url("   "), "")
 
-    def test_version_matches_the_package(self):
+    def test_the_displayed_version_is_the_labelled_one(self):
+        from claude_privacy_check import VERSION_LABEL
         from claude_privacy_check.about import APP_VERSION
-        self.assertEqual(APP_VERSION, __version__)
+        self.assertEqual(APP_VERSION, VERSION_LABEL)
+
+    def test_the_label_is_the_version_plus_the_build_counter(self):
+        from claude_privacy_check import VERSION_LABEL, __build__
+        self.assertEqual(VERSION_LABEL, f"{__version__} ({__build__})")
+        self.assertIsInstance(__build__, int)
+        self.assertGreaterEqual(__build__, 1)
+
+    def test_pyproject_carries_the_bare_version(self):
+        """PEP 440 has no room for the bracket, so packaging gets the semver
+        alone -- and the two must not drift apart."""
+        pyproject = (Path(__file__).resolve().parent.parent
+                     / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn(f'version = "{__version__}"', pyproject)
 
     def test_licence_matches_pyproject(self):
         pyproject = (Path(__file__).resolve().parent.parent

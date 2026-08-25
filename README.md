@@ -263,9 +263,22 @@ Three systemd **user** units, no root:
 server at session start — right before you type your first prompt. A notification
 a second later reaches you in time; a coarse poll may not.
 
-You are warned only when something actually points at capture: any finding of the
-assessment, or a deviation at HIGH or CRITICAL. Harmless deviations stay silent
-but remain visible in the interface.
+You are warned only when something actually points at capture: a finding or a
+deviation at HIGH or CRITICAL. Everything quieter — a paid plan, the length of
+the telemetry queue, your own settings, permissions, plugins — stays silent and
+remains visible in the interface. Three rules keep the alarm rare enough to be
+worth reading:
+
+- **A value that vanished is not a value that appeared.** A `monitoring_notice`
+  going from a text to nothing, or a key disappearing while its file is
+  rewritten, is capped at MEDIUM. The path alone decides how loud a change is
+  only while something is actually set there.
+- **A file being written is not a broken file.** The watch reacts to the write
+  itself, so a settings file is re-read twice before a parse failure counts, and
+  one that is simply empty is read as empty rather than as damaged.
+- **Standing state never notifies.** It belongs in the report, not in a popup —
+  and it kept the volatile queue length out of the "is this new?" comparison,
+  which used to make every changed count look like a new event.
 
 **At most once per session.** The marker lives in
 `$XDG_RUNTIME_DIR/claude-privacy-check/`, which the system clears at logout, so a
