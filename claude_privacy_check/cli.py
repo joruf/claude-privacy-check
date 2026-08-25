@@ -471,6 +471,10 @@ def build_parser(lang_codes):
     p.add_argument("--gui", action="store_true", help=t("cli.help.gui"))
     p.add_argument("--cli", action="store_true", help=t("cli.help.cli"))
     p.add_argument("--about", action="store_true", help=t("cli.help.about"))
+    # Same one-line form the other programs here answer with, so a build can be
+    # identified without opening a window.
+    p.add_argument("--version", action="version", help=t("cli.help.version"),
+                   version=f"{about.APP_NAME} {about.APP_VERSION}")
     p.add_argument("--data", action="store_true", help=t("cli.help.data_view"))
     p.add_argument("--license", action="store_true", help=t("cli.help.license"))
     p.add_argument("--init", action="store_true", help=t("cli.help.init"))
