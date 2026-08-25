@@ -40,7 +40,12 @@ def about_rows() -> list[tuple[str, str, str]]:
     An empty link target means the row is plain text.
     """
     return [
-        ("about.version", f"{APP_VERSION} · {APP_LICENSE}", ""),
+        # The version stands alone, in the "x.y.z (build)" shape the other
+        # programs here use: the semantic number says what changed, the counter
+        # says whether this is yesterday's build. Anything appended to that
+        # field makes both harder to read at a glance.
+        ("about.version", APP_VERSION, ""),
+        ("about.license", APP_LICENSE, ""),
         ("about.author", ABOUT_AUTHOR, ""),
         ("about.website", ABOUT_WEBSITE, normalize_about_url(ABOUT_WEBSITE)),
         ("about.github", ABOUT_GITHUB, normalize_about_url(ABOUT_GITHUB)),
