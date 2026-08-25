@@ -86,7 +86,7 @@ account e-mail, the organisation id and every watched path.
 
 ## What it looks like
 
-The window has six views and a menu bar; the command line does everything the
+The window has seven views and a menu bar; the command line does everything the
 window does.
 
 ### Check — assessment and deviation from the baseline
@@ -102,6 +102,8 @@ window does.
 ### Observer view — what a triage over that data would surface
 
 ![Observer view](docs/screenshots/observer.png)
+
+### Telemetry — the events queued to leave this machine
 
 ### Instructions — what is loaded into a session before your prompt
 
@@ -122,10 +124,56 @@ window does.
 | `ANTHROPIC_BASE_URL`, `NODE_EXTRA_CA_CERTS`, proxy variables | traffic through a gateway that sees everything in the clear |
 | `cleanupPeriodDays` | extends local plaintext retention, widening what a later hook could harvest |
 | Shell profiles, MCP servers, plugins, file ownership | further injection paths |
+| `~/.claude/telemetry/*.json` | the outbound event queue — the payload itself, not a setting that describes it |
 
 Environment variables are read from `/proc/<pid>/environ` of running Claude Code
 processes, not just the calling shell — otherwise variables an IDE handed to the
 process would stay invisible.
+
+### The outbound telemetry queue
+
+Every other check here reads *configuration* — what could be captured if someone
+switched it on. This one reads the payload. Claude Code keeps its own first-party
+events under `~/.claude/telemetry`, JSON per line, in the clear, and that is the
+one place where "nothing of mine leaves this machine" can be held against
+evidence instead of against a settings file.
+
+**It is the retry queue.** The files are named `1p_failed_events.*`: events whose
+delivery failed, kept for another attempt. A successful one leaves no copy
+behind. So it is a sample of the payload's shape, never a complete send log, and
+an empty directory proves nothing. The interface says so in the view itself.
+
+What the view reports:
+
+- **A content scan** for this machine's home path and user name, its project
+  names, the account address and literal credential shapes. Encoded fields are
+  decoded *first* — two of them carry a nested JSON object that a plain text
+  search walks straight past, which makes them the obvious hiding place. A hit
+  is CRITICAL, feeds the exit code and raises the desktop notification; unlike
+  the transcript sweep there is no harmless hit here, because product telemetry
+  has no reason to carry any of it.
+- **A credential is reported by the pattern that matched, never by the value.**
+  Printing it would make the report the second place it exists. For the same
+  reason the baseline records counts only — no excerpts, no matched literals.
+- **What identifies the machine**: operating system, distribution, kernel, shell,
+  which editor started the session. No project name can be read out of these. A
+  change of computer is visible in them.
+- **What identifies the account**, and a check the label alone will not give you:
+  the field named `device_id` is compared against both `userID` and `machineID`
+  from `~/.claude.json`, and the view states which one it actually holds.
+- **Names you chose yourself.** Skills, subagents and slash commands are counted
+  by name, and those names were typed on this machine. Nothing is wrong with
+  that — it is how a skill load gets counted — but a name is free text, and
+  people put a company, a client or a project codename in one. Matched against
+  whole field values, so a two-letter command name is as findable as a long one
+  and nothing matches by accident.
+- **The complete payload structure**: every field that appears anywhere in the
+  queue, with an example value. That is the whole of what an event can carry.
+  There is no second, hidden part.
+
+A queue that scans clean still produces an INFO finding naming what was examined.
+A surface that was checked and came back negative should say so rather than
+vanish into an empty list.
 
 ### Deleting local history
 
@@ -240,11 +288,13 @@ claude-privacy-check --list-data     # local history inventory
 claude-privacy-check --delete PATH   # delete below ~/.claude, asks first
 claude-privacy-check --cli --worktime      # working time (terminal)
 claude-privacy-check --cli --observer      # triage summary (terminal)
+claude-privacy-check --cli --telemetry     # outbound queue (terminal)
 claude-privacy-check --cli --instructions  # instruction files (terminal)
 
 claude-privacy-check --data          # GUI: local data view
 claude-privacy-check --worktime      # GUI: working time
 claude-privacy-check --observer      # GUI: observer view
+claude-privacy-check --telemetry     # GUI: outbound telemetry queue
 claude-privacy-check --instructions  # GUI: instructions view
 claude-privacy-check --language de   # switch language, remembered
 claude-privacy-check --about

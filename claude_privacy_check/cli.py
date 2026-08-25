@@ -7,7 +7,7 @@ import json
 import os
 import sys
 
-from . import about, core, data, instructions, observer, watch, worktime
+from . import about, core, data, instructions, observer, telemetry, watch, worktime
 from . import license as licence
 from .i18n import (apply_startup_language, available_languages, current_language,
                    save_preference, t)
@@ -179,6 +179,98 @@ def show_observer(as_json):
             print(f"        {clip(sample['excerpt'], 110)}")
     print()
     print(paint(t(observer.verdict_key(report)), "OK"))
+    return 0
+
+
+def show_telemetry(as_json):
+    report = telemetry.build_report(core.collect_account_and_mcp()[0])
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+        return 0
+
+    print(paint(t("telemetry.intro"), "INFO"))
+    print()
+    print(paint(f"── {t('telemetry.section.summary')} ──", "INFO"))
+    if not report["exists"]:
+        print("  " + t("telemetry.summary.missing"))
+        return 0
+    if not report["events"]:
+        print("  " + t("telemetry.summary.empty"))
+        return 0
+    print("  " + t("telemetry.summary.line", files=report["files"],
+                   events=report["events"],
+                   size=data.human_bytes(report["bytes"]),
+                   oldest=report["oldest"] or "—", newest=report["newest"] or "—"))
+    print("  " + paint(t("telemetry.retry_note"), "INFO"))
+    if report["truncated"]:
+        print("  " + paint(t("telemetry.truncated",
+                             size=data.human_bytes(telemetry.MAX_BYTES)), "MEDIUM"))
+    if report["unreadable"]:
+        print("  " + paint(t("telemetry.unreadable", count=report["unreadable"]),
+                           "MEDIUM"))
+
+    print()
+    print(paint(f"── {t('telemetry.section.scan')} ──", "INFO"))
+    for category in report["categories"]:
+        name = t(category["key"])
+        if not category["count"]:
+            print(f"  {paint('·', 'OK')} {name}: {t('telemetry.scan.clean')}")
+            continue
+        print(f"  {paint('!', 'CRITICAL')} {name}: "
+              + t("telemetry.scan.hit", count=category["count"],
+                  literals=", ".join(category["literals"]) or "—"))
+        for sample in category["samples"]:
+            print(f"        {clip(sample, 110)}")
+    print("  " + paint(t("telemetry.scan.note"), "INFO"))
+    print("  " + paint(t("telemetry.scan.secret_note"), "INFO"))
+
+    for section, rows, note in (
+            ("telemetry.section.device", report["device"], "telemetry.device.note"),
+            ("telemetry.section.identity", report["identity"],
+             "telemetry.identity.note")):
+        print()
+        print(paint(f"── {t(section)} ──", "INFO"))
+        for row in rows:
+            print(f"  {row['path']}: {clip(row['value'], 70)}")
+        print("  " + paint(t(note), "INFO"))
+        if section.endswith("identity") and report["device_id_kind"]:
+            print("  " + paint(t("telemetry.device_id." + report["device_id_kind"]),
+                               "MEDIUM"))
+
+    print()
+    print(paint(f"── {t('telemetry.section.local_names')} ──", "INFO"))
+    if not report["local_names"]:
+        print("  " + t("telemetry.local_names.none"))
+    for entry in report["local_names"]:
+        print(f"  {entry['name']}: "
+              + t("telemetry.local_names.row", count=entry["count"],
+                  kind=t("telemetry.kind." + entry["kind"]), field=entry["field"]))
+    print("  " + paint(t("telemetry.local_names.note"), "INFO"))
+
+    print()
+    print(paint(f"── {t('telemetry.section.events')} ──", "INFO"))
+    for entry in report["event_names"]:
+        print(f"  {entry['count']:5d}  {entry['name']}")
+    print("  " + paint(t("telemetry.events.note"), "INFO"))
+
+    if report["decoded"]:
+        print()
+        print(paint(f"── {t('telemetry.section.decoded')} ──", "INFO"))
+        for entry in report["decoded"]:
+            print(f"  {entry['path']}")
+            print(f"      {clip(entry['sample'], 110)}")
+        print("  " + paint(t("telemetry.decoded.note"), "INFO"))
+
+    print()
+    print(paint(f"── {t('telemetry.section.fields')} ──", "INFO"))
+    for entry in report["fields"]:
+        sample = clip(entry["sample"] or "", 60) if entry["sample"] else ""
+        print(f"  {entry['count']:5d}  {entry['path']}"
+              + (f"  = {sample}" if sample else ""))
+    print("  " + paint(t("telemetry.fields.note"), "INFO"))
+
+    print()
+    print(paint(t(telemetry.verdict_key(report)), "OK"))
     return 0
 
 
@@ -391,6 +483,7 @@ def build_parser(lang_codes):
     p.add_argument("--list-data", action="store_true", help=t("cli.help.list_data"))
     p.add_argument("--worktime", action="store_true", help=t("cli.help.worktime"))
     p.add_argument("--observer", action="store_true", help=t("cli.help.observer"))
+    p.add_argument("--telemetry", action="store_true", help=t("cli.help.telemetry"))
     p.add_argument("--instructions", action="store_true",
                    help=t("cli.help.instructions"))
     p.add_argument("--delete", action="append", metavar="PATH", default=None,
@@ -427,7 +520,7 @@ def _wants_gui(args):
     if args.project is not None:
         return False
     # bare launch, --language and the view flags (--data / --license / --worktime
-    # / --observer / --instructions) → window
+    # / --observer / --telemetry / --instructions) → window
     return True
 
 
@@ -470,6 +563,7 @@ def main(argv=None):
                        "license" if args.license else
                        "worktime" if args.worktime else
                        "observer" if args.observer else
+                       "telemetry" if args.telemetry else
                        "instructions" if args.instructions else "check")
     if args.license:
         return show_license(args.json)
@@ -479,6 +573,8 @@ def main(argv=None):
         return show_worktime(args.json)
     if args.observer:
         return show_observer(args.json)
+    if args.telemetry:
+        return show_telemetry(args.json)
     if args.instructions:
         return show_instructions(
             [os.path.abspath(x) for x in (args.project or [os.getcwd()])], args.json)

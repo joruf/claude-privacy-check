@@ -20,6 +20,7 @@ import shutil
 import stat
 from datetime import datetime, timezone
 
+from . import telemetry as telemetry_queue
 from .i18n import t
 
 HOME = os.path.expanduser("~")
@@ -131,8 +132,9 @@ PLAN_KEYS = {
 PAID_SUBSCRIPTIONS = frozenset({"pro", "max", "team", "enterprise"})
 
 # Fields that change on every run or merely describe the scope of collection --
-# never a finding. local_history grows with every session and is display-only.
-DIFF_IGNORE_ROOTS = {"collected_at", "project_dirs", "local_history"}
+# never a finding. local_history grows with every session and is display-only,
+# and telemetry is the outbound queue, which drains and refills on its own.
+DIFF_IGNORE_ROOTS = {"collected_at", "project_dirs", "local_history", "telemetry"}
 
 
 def digest(value):
@@ -408,7 +410,7 @@ def collect(project_dirs=()):
     plugins = sorted(os.listdir(plugin_dir)) if os.path.isdir(plugin_dir) else []
 
     return {
-        "version": 4,
+        "version": 5,
         "collected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "project_dirs": sorted(set(project_dirs)),
         "surfaces": surfaces,
@@ -419,6 +421,8 @@ def collect(project_dirs=()):
         "mcp_servers": mcp,
         "plugins": plugins,
         "local_history": collect_local_history(),
+        "telemetry": telemetry_queue.collect_summary(
+            telemetry_queue.local_identifiers(account)),
     }
 
 
@@ -469,6 +473,21 @@ def assess(snapshot):
         add("CRITICAL", "finding.monitoring_notice", notice=content["monitoring_notice"])
     if content.get("compliance_taints"):
         add("HIGH", "finding.compliance_taints", taints=content["compliance_taints"])
+
+    # The outbound telemetry queue -- evidence rather than configuration.
+    # Everything above says what could be captured; this says what is queued to
+    # leave. A hit here is the one finding in this tool that does not depend on
+    # reading a settings file correctly.
+    queue = snapshot.get("telemetry") or {}
+    queue_hits = queue.get("hits") or {}
+    if queue_hits:
+        add("CRITICAL", "finding.telemetry_content",
+            categories=", ".join(t(f"telemetry.cat.{slug}")
+                                 for slug in sorted(queue_hits)),
+            count=sum(queue_hits.values()))
+    elif queue.get("events"):
+        add("INFO", "finding.telemetry_queue",
+            events=queue["events"], files=queue["files"])
 
     # Settings pushed from the admin console
     remote = snapshot["surfaces"].get("file:~/.claude/remote-settings.json") or {}
