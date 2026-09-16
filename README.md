@@ -86,7 +86,7 @@ account e-mail, the organisation id and every watched path.
 
 ## What it looks like
 
-The window has seven views and a menu bar; the command line does everything the
+The window has eight views and a menu bar; the command line does everything the
 window does.
 
 ### Check — assessment and deviation from the baseline
@@ -98,6 +98,8 @@ window does.
 ![Local data](docs/screenshots/local-data.png)
 
 ### Working time — the timesheet those transcripts add up to
+
+### Admin dashboard — the row your organisation already sees
 
 ### Observer view — what a triage over that data would surface
 
@@ -212,6 +214,66 @@ The method, stated in the interface as well:
 - it is a **lower bound** — work without Claude Code leaves no timestamp here,
   and these are figures for activity, not attendance
 
+### Admin dashboard
+
+The other views ask what is being captured *on this machine*. This one asks the
+opposite question, and it is the one people actually want answered: **what does
+the organisation already see, without capturing anything at all?**
+
+On a Team or Enterprise seat the answer is a dashboard. Owners and Primary
+Owners open Analytics and get active members, adoption, product stickiness,
+"how agentic is their work?", top members by chats and artifacts, a Claude Code
+leaderboard by lines of code, spend concentration, and a per-user, per-model CSV
+with request counts and token counts in it. None of it is conversation content.
+All of it is about a named person.
+
+This view rebuilds that row from the local transcripts, so the figures stop
+being an abstraction:
+
+- **The spend report**, one line per model, under the field names the export
+  actually uses (`total_requests`, `total_prompt_tokens`,
+  `total_completion_tokens`), plus the month-to-month curve.
+- **Top spenders and spend concentration** — cost per session, per active day
+  and per prompt.
+- **The Claude Code leaderboard** — lines of code accepted, and what cannot be
+  had locally: a rejected suggestion leaves no trace, so there is no accept
+  rate, and "PRs with Claude Code" stays empty until an owner connects the
+  GitHub app.
+- **How agentic is their work?** — tool calls per typed prompt, delegations to
+  subagents, and the skill names. Those names are free text you chose yourself
+  and they travel into the statistics as field values. Next to the ratio sits
+  the breakdown the tile does not show: how many of those calls only looked and
+  verified, and how many actually wrote something. That split is what decides
+  whether a high ratio reads as leverage or as somebody who stopped looking.
+- **Projects**, with the distinction the dashboard blurs: "Projects" there means
+  the claude.ai project feature, while the working directories below it live in
+  the organisation data export, because every transcript carries its `cwd`.
+- **Working pattern** — off-hours, nights, weekends, the strongest weekday, the
+  hour after midnight. Not a dashboard tile, but one hour with the data export
+  produces it.
+
+**Both readings, for the same figure.** A number alone does not tell a person
+what it will do to them, so the view ends with the two readings every figure on
+the page carries: what it argues for you, and what it argues against you. The
+consumption that proves the tool is being used is the same consumption that puts
+your name at the top of spend concentration; the working hours that show
+commitment are the same hours that read as a personnel file. Underneath it, what
+follows: that the values are produced server-side and cannot be deleted away,
+what a prepared explanation would consist of in your own figures, and that
+lowering the ratio is possible, is a bad trade, and is still your decision.
+
+Three limits, stated in the view as well:
+
+- **Claude Code only.** Chats on claude.ai, artifacts made there, Cowork and
+  Design leave nothing on this disk; those rows are not reconstructed.
+- **A lower bound.** A session deleted locally is gone from this count and still
+  counted server-side.
+- **Spend is list price.** The token counts are what happened; the money column
+  is those tokens at the published per-model rate (cache writes at 1.25x input,
+  cache reads at 0.10x). On a seat-based plan nobody is invoiced for it, and the
+  dashboard shows the number anyway. A model with no published rate is reported
+  as unpriced rather than quietly valued at zero.
+
 ### Observer view
 
 Volume feels like protection — 200 sessions, hundreds of megabytes, surely nobody
@@ -300,12 +362,14 @@ claude-privacy-check --init          # record a new baseline (overwrites!)
 claude-privacy-check --list-data     # local history inventory
 claude-privacy-check --delete PATH   # delete below ~/.claude, asks first
 claude-privacy-check --cli --worktime      # working time (terminal)
+claude-privacy-check --cli --analytics     # the admin dashboard (terminal)
 claude-privacy-check --cli --observer      # triage summary (terminal)
 claude-privacy-check --cli --telemetry     # outbound queue (terminal)
 claude-privacy-check --cli --instructions  # instruction files (terminal)
 
 claude-privacy-check --data          # GUI: local data view
 claude-privacy-check --worktime      # GUI: working time
+claude-privacy-check --analytics     # GUI: admin dashboard
 claude-privacy-check --observer      # GUI: observer view
 claude-privacy-check --telemetry     # GUI: outbound telemetry queue
 claude-privacy-check --instructions  # GUI: instructions view
@@ -340,6 +404,7 @@ claude_privacy_check/
 ├── core.py                       collection, assessment, comparison
 ├── data.py                       local history inventory and guarded deletion
 ├── worktime.py                   working time from the transcript timestamps
+├── analytics.py                  the dashboard row the organisation sees
 ├── observer.py                   what a triage over that data would surface
 ├── instructions.py               instruction files loaded into sessions
 ├── watch.py                      notification and systemd units

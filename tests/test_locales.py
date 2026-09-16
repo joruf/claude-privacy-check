@@ -34,6 +34,16 @@ DYNAMIC_KEYS = (
     | {f"telemetry.cat.{c}" for c in ("path", "project", "account", "secret")}
     | {f"telemetry.kind.{k}" for k in ("skill", "agent", "command")}
     | {f"telemetry.device_id.{k}" for k in ("user", "machine", "unknown")}
+    # The admin view names both readings of the same figure, and the purpose a
+    # tool call served -- analytics.py decides which ones apply, the interface
+    # renders them.
+    | {f"analytics.reading.{topic}.{part}"
+       for topic in ("spend", "agentic", "code", "pattern", "names")
+       for part in ("label", "up", "down")}
+    | {f"analytics.reading.{side}" for side in ("up", "down")}
+    | {f"analytics.mix.{purpose}" for purpose in
+       ("inspect", "write", "delegate", "confirm", "other")}
+    | {f"analytics.consequence.{step}" for step in ("hidden", "prepare", "lower")}
 )
 
 
