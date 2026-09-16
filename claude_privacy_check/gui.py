@@ -5,6 +5,7 @@ Views:
   Licence        subscription / auth details readable from this machine
   Local data     inventory of the local history with per-entry deletion
   Working time   the timesheet the transcript timestamps add up to
+  Admin view     the dashboard row the organisation sees about this account
   Observer view  what a mechanical triage over that data would surface
   Telemetry      the events queued to leave this machine for Anthropic
   Instructions   instruction files loaded into sessions, editable in place
@@ -26,8 +27,8 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox
 
-from . import (about, core, data, instructions, license as licence, observer,
-               telemetry, worktime)
+from . import (about, analytics, core, data, instructions, license as licence,
+               observer, telemetry, worktime)
 from .icons import SIZES, icon_png
 from .i18n import (available_languages, current_language, save_preference,
                    set_language, t)
@@ -37,6 +38,7 @@ NAV_TABS = (
     ("license", "nav.license"),
     ("data", "nav.data"),
     ("worktime", "nav.worktime"),
+    ("analytics", "nav.analytics"),
     ("observer", "nav.observer"),
     ("telemetry", "nav.telemetry"),
     ("instructions", "nav.instructions"),
@@ -48,6 +50,9 @@ NAV_TABS = (
 # there was".
 RECENT_DAYS = 14
 RECENT_WEEKS = 12
+# The project table on the admin view: enough to show the shape, with a button
+# for the rest. A long tail of one-session /tmp folders is not the point there.
+RECENT_PROJECTS = 10
 
 LIGHT = {
     "bg": "#f2f3f5", "card": "#ffffff", "border": "#dcdfe3",
@@ -110,6 +115,7 @@ class App:
         self.rules = None
         self.license = None
         self.worktime = None
+        self.analytics = None
         self.telemetry = None
         self.opened = set()   # instruction files with the body unfolded
         # Editing an instruction file survives folding it away, switching tab
@@ -124,6 +130,7 @@ class App:
         self.view = start_view
         self.expanded = set()        # projects with the session list unfolded
         self.all_days = False        # working time: whole log instead of recent
+        self.all_projects = False    # admin view: whole project table
         self.wrappable = []          # labels whose wraplength follows resizing
         self.busy = False
 
@@ -266,6 +273,8 @@ class App:
         view_menu.add_command(label=t("nav.data"), command=lambda: self.switch("data"))
         view_menu.add_command(label=t("nav.worktime"),
                               command=lambda: self.switch("worktime"))
+        view_menu.add_command(label=t("nav.analytics"),
+                              command=lambda: self.switch("analytics"))
         view_menu.add_command(label=t("nav.observer"),
                               command=lambda: self.switch("observer"))
         view_menu.add_command(label=t("nav.instructions"),
@@ -1091,6 +1100,317 @@ class App:
         self.worktime = report
         self.render_worktime()
 
+    # ---------------------------------------------------- view: admin dashboard
+
+    def render_analytics(self):
+        report = self.analytics
+        if report is None:
+            return
+        self._clear_body()
+
+        group = analytics.grouped
+        totals = report["totals"]
+        verdict = analytics.verdict_key(report)
+        tone = ("INFO" if verdict.endswith("empty")
+                else "MEDIUM" if verdict.endswith("pattern") else "accent")
+        self.chip.configure(text=f"  {t('analytics.chip')}  ", bg=self.c[tone])
+        self.status_line.configure(text=t(verdict))
+        if self.result is None:      # started directly in this view
+            self.subtitle.configure(
+                text=self._account_line(report["account"], core.collect_auth())
+                + "\n" + t("analytics.subtitle",
+                           first=report["first_day"] or "—",
+                           last=report["last_day"] or "—",
+                           sessions=report["sessions"],
+                           events=group(report["events"])))
+
+        if not report["sessions"]:
+            self._section(t("analytics.section.summary"))
+            self._note_card(t("analytics.empty"))
+            return
+
+        # ---- what the dashboard holds about this account
+        self._section(t("analytics.section.summary"))
+        self._stat_tiles([
+            (group(totals["requests"]), t("analytics.stat.requests"), "fg"),
+            (analytics.human_count(totals["tokens"]), t("analytics.stat.tokens"), "fg"),
+            (analytics.money(totals["spend"]), t("analytics.stat.spend"), "MEDIUM"),
+            (group(report["sessions"]), t("analytics.stat.sessions"), "fg"),
+            (str(report["active_days"]),
+             t("analytics.stat.days", span=report["span_days"]), "fg"),
+            (group(report["own_messages"]), t("analytics.stat.own"), "fg"),
+            (group(report["loc"]["total"]), t("analytics.stat.loc"), "fg"),
+            (group(report["tool_calls"]), t("analytics.stat.tools"), "fg"),
+            (f"{report['tools_per_prompt']:.1f}", t("analytics.stat.ratio"),
+             "MEDIUM" if report["tools_per_prompt"] >= 5 else "fg"),
+            (f"{report['adoption'] * 100:.0f} %", t("analytics.stat.adoption"), "fg"),
+            (f"{report['stickiness'] * 100:.0f} %",
+             t("analytics.stat.stickiness", days=report["stickiness_window"]), "fg"),
+            (f"{totals['cache_share'] * 100:.1f} %", t("analytics.stat.cache"), "fg"),
+        ])
+
+        # ---- the per-user CSV, field names and all
+        self._section(t("analytics.section.spend"))
+        head = (t("analytics.spend.head.model"), t("analytics.spend.head.requests"),
+                t("analytics.spend.head.prompt"),
+                t("analytics.spend.head.completion"), t("analytics.spend.head.spend"))
+        rows = [((entry["model"], group(entry["requests"]),
+                  group(entry["input"] + entry["cache_write"] + entry["cache_read"]),
+                  group(entry["output"]),
+                  analytics.money(entry["spend"]) if entry["priced"] else "—"), None)
+                for entry in report["models"]]
+        rows.append((
+            (t("analytics.spend.total"), group(totals["requests"]),
+             group(totals["input"] + totals["cache_write"] + totals["cache_read"]),
+             group(totals["output"]), analytics.money(totals["spend"])), "MEDIUM"))
+        self._table(head, rows, left={0})
+        note = t("analytics.spend.fields") + "\n" + t("analytics.spend.note")
+        if report["unpriced"]:
+            note += "\n" + t("analytics.spend.unpriced",
+                             models=", ".join(report["unpriced"]))
+        self._note_card(note)
+
+        # ---- month by month
+        if report["months"]:
+            self._section(t("analytics.section.months"))
+            card = self._meter_card()
+            peak = max(month["spend"] for month in report["months"]) or 1
+            for month in report["months"]:
+                self._meter(card, month["month"],
+                            analytics.money(month["spend"]) + "  ·  "
+                            + t("count.requests", n=group(month["requests"])),
+                            month["spend"] / peak, label_width=8)
+            tk.Frame(card, bg=self.c["card"], height=10).pack()
+            self._note_card(t("analytics.months.note"))
+
+        # ---- the chart with a person's name on it
+        self._section(t("analytics.section.concentration"))
+        self._note_card(
+            t("analytics.concentration.line",
+              session=analytics.money(report["spend_per_session"]),
+              day=analytics.money(report["spend_per_day"]),
+              prompt=analytics.money(report["spend_per_prompt"]))
+            + "\n" + t("analytics.concentration.note"))
+
+        # ---- the code leaderboard
+        loc = report["loc"]
+        self._section(t("analytics.section.code"))
+        self._note_card(
+            t("analytics.code.loc", lines=group(loc["total"]),
+              perday=group(round(report["loc_per_day"])))
+            + "\n" + t("analytics.code.detail", write=group(loc.get("Write", 0)),
+                       edit=group(loc.get("Edit", 0)))
+            + "\n" + t("analytics.code.export")
+            + "\n" + t("analytics.code.missing"))
+
+        # ---- how agentic is their work
+        self._section(t("analytics.section.agentic"))
+        if not report["tool_calls"]:
+            self._note_card(t("analytics.agentic.none"))
+        else:
+            self._note_card(
+                t("analytics.agentic.line",
+                  ratio=f"{report['tools_per_prompt']:.1f}",
+                  calls=group(report["tool_calls"]),
+                  prompts=group(report["own_messages"]))
+                + "\n" + t("analytics.agentic.subagents", n=report["subagents"]))
+            card = self._meter_card()
+            peak = report["tools"][0][1] or 1
+            for name, count in report["tools"][:12]:
+                self._meter(card, name, group(count), count / peak, label_width=16)
+            tk.Frame(card, bg=self.c["card"], height=10).pack()
+            self._table(
+                (t("analytics.mix.head.purpose"), t("analytics.mix.head.calls"),
+                 t("analytics.mix.head.share")),
+                [((t("analytics.mix." + entry["purpose"]), group(entry["calls"]),
+                   f"{entry['share']:.1f} %"),
+                  "MEDIUM" if entry["purpose"] == "write" else None)
+                 for entry in report["tool_mix"]],
+                left={0})
+            note = t("analytics.mix.note")
+            if report["inspect_per_write"]:
+                note = t("analytics.mix.ratio",
+                         ratio=f"{report['inspect_per_write']:.1f}") + "\n" + note
+            self._note_card(note)
+        if report["skills"]:
+            card = self._meter_card()
+            peak = report["skills"][0][1] or 1
+            for name, count in report["skills"]:
+                self._meter(card, name, group(count), count / peak,
+                            tone="MEDIUM", label_width=16)
+            tk.Frame(card, bg=self.c["card"], height=10).pack()
+            self._note_card(t("analytics.agentic.skills.note"))
+
+        # ---- the working directories, which the export carries
+        projects = report["projects"] if self.all_projects \
+            else report["projects"][:RECENT_PROJECTS]
+        self._section(t("analytics.section.projects"),
+                      t("count.projects", n=len(report["projects"])))
+        self._note_card(t("analytics.projects.dashboard"))
+        head = (t("analytics.projects.head.project"),
+                t("analytics.projects.head.sessions"),
+                t("analytics.projects.head.messages"),
+                t("analytics.projects.head.own"),
+                t("analytics.projects.head.size"),
+                t("analytics.projects.head.span"))
+        rows = [((entry["label"], group(entry["sessions"]),
+                  group(entry["messages"]), group(entry["own"]),
+                  data.human_bytes(entry["bytes"]),
+                  f"{entry['first'] or '—'} … {entry['last'] or '—'}"), None)
+                for entry in projects]
+        self._table(head, rows, left={0, 5})
+        if len(report["projects"]) > RECENT_PROJECTS:
+            card = self._card()
+            row = tk.Frame(card, bg=self.c["card"])
+            row.pack(fill="x", padx=14, pady=12)
+            self._button(row, t("btn.show_top_projects") if self.all_projects
+                         else t("btn.show_all_projects"),
+                         self.toggle_all_projects).pack(side="left")
+        self._note_card(t("analytics.projects.note", shown=len(projects),
+                          total=len(report["projects"])))
+
+        # ---- the time clock nobody set up
+        self._section(t("analytics.section.pattern"))
+        self._table((t("analytics.metric.head.key"), t("analytics.metric.head.value")),
+                    [((label, value), tone)
+                     for label, value, tone in analytics.pattern_rows(report)],
+                    left={0, 1})
+
+        card = self._meter_card()
+        peak = max(report["hours"].values()) or 1
+        for hour in range(24):
+            count = report["hours"][hour]
+            off = (hour < report["business_start"] or hour >= report["business_end"])
+            self._meter(card, f"{hour:02d}", group(count) if count else "—",
+                        count / peak, tone="MEDIUM" if off else "accent",
+                        label_width=4)
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+
+        card = self._meter_card()
+        peak = max(report["weekdays"].values()) or 1
+        for day in range(7):
+            count = report["weekdays"][day]
+            self._meter(card, t(f"weekday.{day}"), group(count) if count else "—",
+                        count / peak, tone="MEDIUM" if day >= 5 else "accent",
+                        label_width=4)
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+        self._note_card(t("analytics.pattern.note") + "\n"
+                        + t("analytics.pattern.pointer", tab=t("nav.worktime")))
+
+        # ---- the conclusion, and what it does not cover
+        self._section(t("analytics.section.highlights"))
+        for item in analytics.highlights(report):
+            card = self._card(pady=(0, 6))
+            row = tk.Frame(card, bg=self.c["card"])
+            row.pack(fill="x", padx=14, pady=10)
+            tk.Label(row, text=" ! " if item["tone"] == "MEDIUM" else " · ",
+                     font=self.f_chip, bg=self.c[item["tone"]],
+                     fg=self.c["chip_fg"], padx=4, pady=2).pack(side="left")
+            text = tk.Label(row, text=t(item["key"], **item["params"]),
+                            font=self.f_body, bg=self.c["card"], fg=self.c["fg"],
+                            anchor="w", justify="left")
+            text.pack(side="left", fill="x", expand=True, padx=(10, 0))
+            self.wrappable.append((text, 110))
+
+        readings = analytics.readings(report)
+        if readings:
+            self._section(t("analytics.section.reading"))
+            self._note_card(t("analytics.reading.note"))
+            for item in readings:
+                self._reading_card(item)
+            self._note_card(t("analytics.reading.relative"))
+
+        steps = analytics.consequences(report)
+        if steps:
+            self._section(t("analytics.section.consequences"))
+            for number, step in enumerate(steps, start=1):
+                self._note_card(f"{number}.  " + t(step["key"], **step["params"]))
+
+        self._section(t("analytics.section.blind"))
+        self._note_card(t("analytics.blind.note") + "\n" + t("analytics.blind.floor"))
+        tk.Frame(self.body, bg=self.c["bg"], height=12).pack()
+
+    def _reading_card(self, item):
+        """One figure, both readings, stacked so neither can be skipped."""
+        card = self._card(pady=(0, 6))
+        tk.Label(card, text=t(item["label"]), font=self.f_head, bg=self.c["card"],
+                 fg=self.c["fg"], anchor="w").pack(fill="x", padx=14, pady=(12, 6))
+        for side, tone in (("up", "OK"), ("down", "MEDIUM")):
+            row = tk.Frame(card, bg=self.c["card"])
+            row.pack(fill="x", padx=14, pady=(0, 8))
+            tk.Label(row, text=f" {t('analytics.reading.' + side)} ",
+                     font=self.f_chip, bg=self.c[tone], fg=self.c["chip_fg"],
+                     padx=5, pady=2).pack(side="left", anchor="n")
+            text = tk.Label(row, text=t(item[side]["key"], **item[side]["params"]),
+                            font=self.f_body, bg=self.c["card"], fg=self.c["fg"],
+                            anchor="w", justify="left")
+            text.pack(side="left", fill="x", expand=True, padx=(10, 0))
+            self.wrappable.append((text, 120))
+
+    def _table(self, head, rows, left=(0,)):
+        """A real table: header, aligned columns, one column that stretches.
+
+        ``rows`` are (cells, tone) pairs; a tone colours that whole row, which
+        is how the total line and the flagged metrics are marked. Columns named
+        in ``left`` read as text and align left, the rest are figures and align
+        right.
+        """
+        card = self._card()
+        grid = tk.Frame(card, bg=self.c["card"])
+        grid.pack(fill="x", padx=14, pady=12)
+        grid.columnconfigure(min(left), weight=1)
+        for column, title in enumerate(head):
+            tk.Label(grid, text=title, font=self.f_small, bg=self.c["card"],
+                     fg=self.c["muted"], anchor="w" if column in left else "e"
+                     ).grid(row=0, column=column, sticky="ew",
+                            padx=(0, 14), pady=(0, 6))
+        for index, (cells, tone) in enumerate(rows, start=1):
+            for column, value in enumerate(cells):
+                tk.Label(grid, text=value, font=self.f_mono, bg=self.c["card"],
+                         fg=self.c[tone] if tone else self.c["fg"],
+                         anchor="w" if column in left else "e"
+                         ).grid(row=index, column=column, sticky="ew",
+                                padx=(0, 14), pady=1)
+
+    def toggle_all_projects(self):
+        self.all_projects = not self.all_projects
+        self.render_analytics()
+        self.canvas.yview_moveto(0)
+
+    def reload_analytics(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.show_loading(t("loading.analytics.title"), t("loading.analytics.detail"))
+        self.btn_refresh.configure(state="disabled")
+        self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
+
+        def note(done, total):
+            # Called from the worker thread; hand it to Tk's thread.
+            text = t("analytics.scanning", done=done, total=total)
+            share = (done / total) if total else None
+            self.root.after(0, lambda: (self.status_line.configure(text=text),
+                                        self.update_loading(text, share)))
+
+        def work():
+            try:
+                payload, error = analytics.build_report(progress=note), None
+            except Exception as exc:               # noqa: BLE001 -- surfaced in the UI
+                payload, error = None, exc
+            self.root.after(0, lambda: self._analytics_done(payload, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _analytics_done(self, report, error):
+        self.hide_loading()
+        self.busy = False
+        self.btn_refresh.configure(state="normal")
+        if error is not None:
+            messagebox.showerror(t("app.title"), t("error.data_failed", error=error))
+            return
+        self.analytics = report
+        self.render_analytics()
+
     # ----------------------------------------------------- view: observer
 
     def render_observer(self):
@@ -1787,6 +2107,7 @@ class App:
             text=t("caveat.server_export") if view == "check"
             else t("license.intro") if view == "license"
             else t("worktime.intro") if view == "worktime"
+            else t("analytics.intro") if view == "analytics"
             else t("observer.intro") if view == "observer"
             else t("telemetry.intro") if view == "telemetry"
             else t("instructions.intro") if view == "instructions"
@@ -1800,6 +2121,9 @@ class App:
             self.reload_worktime() if self.worktime is None else self.render_worktime()
         elif view == "license":
             self.reload_license() if self.license is None else self.render_license()
+        elif view == "analytics":
+            self.reload_analytics() if self.analytics is None \
+                else self.render_analytics()
         elif view == "observer":
             self.reload_observer() if self.report is None else self.render_observer()
         elif view == "telemetry":
@@ -1822,6 +2146,10 @@ class App:
         if self.view == "license":
             self.license = None
             self.reload_license()
+            return
+        if self.view == "analytics":
+            self.analytics = None
+            self.reload_analytics()
             return
         if self.view == "observer":
             self.report = None
@@ -2034,7 +2362,8 @@ class App:
 
     def copy_json(self):
         payload = ({"check": self.result, "license": self.license, "data": self.data,
-                    "worktime": self.worktime, "observer": self.report,
+                    "worktime": self.worktime, "analytics": self.analytics,
+                    "observer": self.report,
                     "instructions": self.rules}.get(self.view))
         if payload is None:
             return

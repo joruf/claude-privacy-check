@@ -7,7 +7,8 @@ import json
 import os
 import sys
 
-from . import about, core, data, instructions, observer, telemetry, watch, worktime
+from . import (about, analytics, core, data, instructions, observer, telemetry,
+               watch, worktime)
 from . import license as licence
 from .i18n import (apply_startup_language, available_languages, current_language,
                    save_preference, t)
@@ -127,6 +128,233 @@ def show_license(as_json):
         print()
     print(paint(t("license.raw_hint"), "INFO"))
     return 0 if report["present"] else 1
+
+
+def show_analytics(as_json):
+    report = analytics.build_report()
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+        return 0
+
+    group = analytics.grouped
+    print(paint(t("analytics.intro"), "INFO"))
+    print()
+    if not report["sessions"]:
+        print("  " + t("analytics.empty"))
+        return 0
+
+    totals = report["totals"]
+    print(paint(f"── {t('analytics.section.summary')} ──", "INFO"))
+    print("  " + t("analytics.subtitle", first=report["first_day"],
+                   last=report["last_day"], sessions=report["sessions"],
+                   events=group(report["events"])))
+    _print_pairs([
+        (t("analytics.stat.requests"), group(totals["requests"]), "OK"),
+        (t("analytics.stat.tokens"), analytics.human_count(totals["tokens"]), "OK"),
+        (t("analytics.stat.spend"), analytics.money(totals["spend"]), "MEDIUM"),
+        (t("analytics.stat.sessions"), group(report["sessions"]), "OK"),
+        (t("analytics.stat.days", span=report["span_days"]),
+         str(report["active_days"]), "OK"),
+        (t("analytics.stat.own"), group(report["own_messages"]), "OK"),
+        (t("analytics.stat.loc"), group(report["loc"]["total"]), "OK"),
+        (t("analytics.stat.tools"), group(report["tool_calls"]), "OK"),
+        (t("analytics.stat.ratio"), f"{report['tools_per_prompt']:.1f}",
+         "MEDIUM" if report["tools_per_prompt"] >= 5 else "OK"),
+        (t("analytics.stat.adoption"), f"{report['adoption'] * 100:.0f} %", "OK"),
+        (t("analytics.stat.stickiness", days=report["stickiness_window"]),
+         f"{report['stickiness'] * 100:.0f} %", "OK"),
+        (t("analytics.stat.cache"), f"{totals['cache_share'] * 100:.1f} %", "OK"),
+    ])
+
+    print()
+    print(paint(f"── {t('analytics.section.spend')} ──", "INFO"))
+    _print_spend_table(report)
+    print("  " + paint(t("analytics.spend.fields"), "INFO"))
+    print("  " + paint(t("analytics.spend.note"), "INFO"))
+    if report["unpriced"]:
+        print("  " + paint(t("analytics.spend.unpriced",
+                             models=", ".join(report["unpriced"])), "INFO"))
+
+    if report["months"]:
+        print()
+        print(paint(f"── {t('analytics.section.months')} ──", "INFO"))
+        peak = max(month["spend"] for month in report["months"]) or 1
+        for month in report["months"]:
+            print(f"  {month['month']:<8} {bar(month['spend'] / peak)} "
+                  f"{analytics.money(month['spend']):>12}")
+            for entry in month["models"]:
+                print(f"      {clip(entry['model'], 26):<26} "
+                      f"{group(entry['requests']):>8} req  "
+                      f"{analytics.human_count(entry['tokens']):>8}  "
+                      f"{analytics.money(entry['spend']):>12}")
+        print("  " + paint(t("analytics.months.note"), "INFO"))
+
+    print()
+    print(paint(f"── {t('analytics.section.concentration')} ──", "INFO"))
+    print("  " + t("analytics.concentration.line",
+                   session=analytics.money(report["spend_per_session"]),
+                   day=analytics.money(report["spend_per_day"]),
+                   prompt=analytics.money(report["spend_per_prompt"])))
+    print("  " + paint(t("analytics.concentration.note"), "INFO"))
+
+    print()
+    print(paint(f"── {t('analytics.section.code')} ──", "INFO"))
+    loc = report["loc"]
+    print("  " + t("analytics.code.loc", lines=group(loc["total"]),
+                   perday=group(round(report["loc_per_day"]))))
+    print("  " + t("analytics.code.detail", write=group(loc.get("Write", 0)),
+                   edit=group(loc.get("Edit", 0))))
+    print("  " + paint(t("analytics.code.export"), "INFO"))
+    print("  " + paint(t("analytics.code.missing"), "INFO"))
+
+    print()
+    print(paint(f"── {t('analytics.section.agentic')} ──", "INFO"))
+    if not report["tool_calls"]:
+        print("  " + t("analytics.agentic.none"))
+    else:
+        print("  " + t("analytics.agentic.line",
+                       ratio=f"{report['tools_per_prompt']:.1f}",
+                       calls=group(report["tool_calls"]),
+                       prompts=group(report["own_messages"])))
+        print("  " + t("analytics.agentic.subagents", n=report["subagents"]))
+        print()
+        peak = report["tools"][0][1] or 1
+        for name, count in report["tools"][:12]:
+            print(f"  {clip(name, 16):<16} {bar(count / peak)} {group(count):>9}")
+        print()
+        _print_table(
+            (t("analytics.mix.head.purpose"), t("analytics.mix.head.calls"),
+             t("analytics.mix.head.share")),
+            [(t("analytics.mix." + entry["purpose"]), group(entry["calls"]),
+              f"{entry['share']:.1f} %") for entry in report["tool_mix"]],
+            left={0})
+        if report["inspect_per_write"]:
+            print("  " + t("analytics.mix.ratio",
+                           ratio=f"{report['inspect_per_write']:.1f}"))
+        print("  " + paint(t("analytics.mix.note"), "INFO"))
+    if report["skills"]:
+        print()
+        print(f"  {t('analytics.agentic.skills')}: "
+              + ", ".join(f"{name} ({count})" for name, count in report["skills"]))
+        print("  " + paint(t("analytics.agentic.skills.note"), "INFO"))
+
+    print()
+    print(paint(f"── {t('analytics.section.projects')} ──", "INFO"))
+    print("  " + paint(t("analytics.projects.dashboard"), "INFO"))
+    print()
+    _print_project_table(report["projects"])
+
+    print()
+    print(paint(f"── {t('analytics.section.pattern')} ──", "INFO"))
+    _print_pairs(analytics.pattern_rows(report))
+    print()
+    peak = max(report["hours"].values()) or 1
+    for hour in range(24):
+        count = report["hours"][hour]
+        off = hour < report["business_start"] or hour >= report["business_end"]
+        label = paint(f"{hour:02d}", "MEDIUM") if off and count else f"{hour:02d}"
+        print(f"  {label}   {bar(count / peak)} "
+              f"{group(count) if count else '—':>9}")
+    print("  " + paint(t("analytics.pattern.note"), "INFO"))
+    print("  " + paint(t("analytics.pattern.pointer", tab="--worktime"), "INFO"))
+
+    print()
+    print(paint(f"── {t('analytics.section.highlights')} ──", "INFO"))
+    for item in analytics.highlights(report):
+        print(f"  {paint('·', item['tone'])} {t(item['key'], **item['params'])}")
+
+    readings = analytics.readings(report)
+    if readings:
+        print()
+        print(paint(f"── {t('analytics.section.reading')} ──", "INFO"))
+        print("  " + paint(t("analytics.reading.note"), "INFO"))
+        width = max(len(t("analytics.reading.up")), len(t("analytics.reading.down")))
+        for item in readings:
+            print()
+            print("  " + t(item["label"]))
+            for side, tone in (("up", "OK"), ("down", "MEDIUM")):
+                print(f"      {paint(t('analytics.reading.' + side), tone):<{width}}  "
+                      + t(item[side]["key"], **item[side]["params"]))
+        print()
+        print("  " + paint(t("analytics.reading.relative"), "INFO"))
+
+    steps = analytics.consequences(report)
+    if steps:
+        print()
+        print(paint(f"── {t('analytics.section.consequences')} ──", "INFO"))
+        for number, step in enumerate(steps, start=1):
+            print(f"  {number}. " + t(step["key"], **step["params"]))
+
+    print()
+    print(paint(f"── {t('analytics.section.blind')} ──", "INFO"))
+    print("  " + paint(t("analytics.blind.note"), "INFO"))
+    print("  " + paint(t("analytics.blind.floor"), "INFO"))
+
+    print()
+    print(paint(t(analytics.verdict_key(report)), "OK"))
+    return 0
+
+
+def _print_pairs(rows):
+    """Label / value / tone triples, aligned on the widest label."""
+    if not rows:
+        return
+    width = max(len(label) for label, _value, _tone in rows)
+    for label, value, tone in rows:
+        print(f"  {label:<{width}}  {paint(value, tone)}")
+
+
+def _print_table(head, rows, left, highlight_last=False):
+    """A fixed-width table. ``left`` names the columns that read as text."""
+    if not rows:
+        return
+    widths = [max(len(str(row[i])) for row in (head, *rows))
+              for i in range(len(head))]
+
+    def render(row):
+        return "  ".join(f"{row[i]:<{widths[i]}}" if i in left
+                         else f"{row[i]:>{widths[i]}}" for i in range(len(head)))
+
+    print("  " + paint(render(head), "INFO"))
+    for index, row in enumerate(rows):
+        line = render(row)
+        last = highlight_last and index == len(rows) - 1
+        print("  " + (paint(line, "MEDIUM") if last else line))
+
+
+def _print_spend_table(report):
+    """The per-user CSV, one row per model, the way the export writes it."""
+    group = analytics.grouped
+    head = (t("analytics.spend.head.model"), t("analytics.spend.head.requests"),
+            t("analytics.spend.head.prompt"), t("analytics.spend.head.completion"),
+            t("analytics.spend.head.spend"))
+    rows = [(clip(entry["model"], 26), group(entry["requests"]),
+             group(entry["input"] + entry["cache_write"] + entry["cache_read"]),
+             group(entry["output"]),
+             analytics.money(entry["spend"]) if entry["priced"] else "—")
+            for entry in report["models"]]
+    totals = report["totals"]
+    rows.append((t("analytics.spend.total"), group(totals["requests"]),
+                 group(totals["input"] + totals["cache_write"] + totals["cache_read"]),
+                 group(totals["output"]), analytics.money(totals["spend"])))
+    _print_table(head, rows, left={0}, highlight_last=True)
+
+
+def _print_project_table(projects):
+    """Working directory, sessions, messages, own messages, size, period."""
+    group = analytics.grouped
+    head = (t("analytics.projects.head.project"),
+            t("analytics.projects.head.sessions"),
+            t("analytics.projects.head.messages"),
+            t("analytics.projects.head.own"),
+            t("analytics.projects.head.size"),
+            t("analytics.projects.head.span"))
+    rows = [(clip(entry["label"], 44), group(entry["sessions"]),
+             group(entry["messages"]), group(entry["own"]),
+             data.human_bytes(entry["bytes"]),
+             f"{entry['first'] or '—'} … {entry['last'] or '—'}")
+            for entry in projects]
+    _print_table(head, rows, left={0, 5})
 
 
 def show_observer(as_json):
@@ -487,6 +715,7 @@ def build_parser(lang_codes):
     p.add_argument("--list-data", action="store_true", help=t("cli.help.list_data"))
     p.add_argument("--worktime", action="store_true", help=t("cli.help.worktime"))
     p.add_argument("--observer", action="store_true", help=t("cli.help.observer"))
+    p.add_argument("--analytics", action="store_true", help=t("cli.help.analytics"))
     p.add_argument("--telemetry", action="store_true", help=t("cli.help.telemetry"))
     p.add_argument("--instructions", action="store_true",
                    help=t("cli.help.instructions"))
@@ -524,7 +753,7 @@ def _wants_gui(args):
     if args.project is not None:
         return False
     # bare launch, --language and the view flags (--data / --license / --worktime
-    # / --observer / --telemetry / --instructions) → window
+    # / --observer / --analytics / --telemetry / --instructions) → window
     return True
 
 
@@ -567,6 +796,7 @@ def main(argv=None):
                        "license" if args.license else
                        "worktime" if args.worktime else
                        "observer" if args.observer else
+                       "analytics" if args.analytics else
                        "telemetry" if args.telemetry else
                        "instructions" if args.instructions else "check")
     if args.license:
@@ -577,6 +807,8 @@ def main(argv=None):
         return show_worktime(args.json)
     if args.observer:
         return show_observer(args.json)
+    if args.analytics:
+        return show_analytics(args.json)
     if args.telemetry:
         return show_telemetry(args.json)
     if args.instructions:
