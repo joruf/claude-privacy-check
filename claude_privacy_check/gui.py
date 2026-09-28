@@ -6,6 +6,7 @@ Views:
   Local data     inventory of the local history with per-entry deletion
   Working time   the timesheet the transcript timestamps add up to
   Admin view     the dashboard row the organisation sees about this account
+  Names          tab names and opened-file paths the conversations carry
   Observer view  what a mechanical triage over that data would surface
   Telemetry      the events queued to leave this machine for Anthropic
   Instructions   instruction files loaded into sessions, editable in place
@@ -28,7 +29,7 @@ from tkinter import font as tkfont
 from tkinter import messagebox
 
 from . import (about, analytics, core, data, instructions, license as licence,
-               observer, telemetry, worktime)
+               names, observer, telemetry, worktime)
 from .icons import SIZES, icon_png
 from .i18n import (available_languages, current_language, save_preference,
                    set_language, t)
@@ -39,6 +40,7 @@ NAV_TABS = (
     ("data", "nav.data"),
     ("worktime", "nav.worktime"),
     ("analytics", "nav.analytics"),
+    ("names", "nav.names"),
     ("observer", "nav.observer"),
     ("telemetry", "nav.telemetry"),
     ("instructions", "nav.instructions"),
@@ -53,6 +55,9 @@ RECENT_WEEKS = 12
 # The project table on the admin view: enough to show the shape, with a button
 # for the rest. A long tail of one-session /tmp folders is not the point there.
 RECENT_PROJECTS = 10
+# The name and path tables on the names view. The full list is the point of
+# that page, so the button is always there, never a silent cut.
+RECENT_NAMES = 20
 
 LIGHT = {
     "bg": "#f2f3f5", "card": "#ffffff", "border": "#dcdfe3",
@@ -116,6 +121,7 @@ class App:
         self.license = None
         self.worktime = None
         self.analytics = None
+        self.names = None
         self.telemetry = None
         self.opened = set()   # instruction files with the body unfolded
         # Editing an instruction file survives folding it away, switching tab
@@ -131,6 +137,7 @@ class App:
         self.expanded = set()        # projects with the session list unfolded
         self.all_days = False        # working time: whole log instead of recent
         self.all_projects = False    # admin view: whole project table
+        self.all_names = False       # names view: whole name and path tables
         self.wrappable = []          # labels whose wraplength follows resizing
         self.busy = False
 
@@ -275,6 +282,8 @@ class App:
                               command=lambda: self.switch("worktime"))
         view_menu.add_command(label=t("nav.analytics"),
                               command=lambda: self.switch("analytics"))
+        view_menu.add_command(label=t("nav.names"),
+                              command=lambda: self.switch("names"))
         view_menu.add_command(label=t("nav.observer"),
                               command=lambda: self.switch("observer"))
         view_menu.add_command(label=t("nav.instructions"),
@@ -1347,13 +1356,14 @@ class App:
             text.pack(side="left", fill="x", expand=True, padx=(10, 0))
             self.wrappable.append((text, 120))
 
-    def _table(self, head, rows, left=(0,)):
+    def _table(self, head, rows, left=(0,), actions=None):
         """A real table: header, aligned columns, one column that stretches.
 
         ``rows`` are (cells, tone) pairs; a tone colours that whole row, which
         is how the total line and the flagged metrics are marked. Columns named
         in ``left`` read as text and align left, the rest are figures and align
-        right.
+        right. ``actions`` is one (label, callback) per row, or None for a row
+        that has nothing to do -- it adds a trailing column of buttons.
         """
         card = self._card()
         grid = tk.Frame(card, bg=self.c["card"])
@@ -1371,6 +1381,11 @@ class App:
                          anchor="w" if column in left else "e"
                          ).grid(row=index, column=column, sticky="ew",
                                 padx=(0, 14), pady=1)
+            action = actions[index - 1] if actions else None
+            if action:
+                label, command = action
+                self._button(grid, label, command).grid(
+                    row=index, column=len(head), sticky="e", padx=(0, 0), pady=1)
 
     def toggle_all_projects(self):
         self.all_projects = not self.all_projects
@@ -1410,6 +1425,194 @@ class App:
             return
         self.analytics = report
         self.render_analytics()
+
+    # --------------------------------------------------- view: names and paths
+
+    def render_names(self):
+        report = self.names
+        if report is None:
+            return
+        self._clear_body()
+
+        verdict = names.verdict_key(report)
+        tone = ("HIGH" if verdict.endswith("sensitive")
+                else "MEDIUM" if verdict.endswith("found") else "OK")
+        self.chip.configure(text=f"  {t('names.chip')}  ", bg=self.c[tone])
+        self.status_line.configure(text=t(verdict))
+        if self.result is None:      # started directly in this view
+            account, _mcp = core.collect_account_and_mcp()
+            self.subtitle.configure(
+                text=self._account_line(account, core.collect_auth()) + "\n"
+                + t("names.subtitle", titles=len(report["titles"]),
+                    opened=len(report["opened"]),
+                    transcripts=report["transcripts"]))
+
+        if not report["titles"] and not report["opened"]:
+            self._section(t("names.section.titles"))
+            self._note_card(t("names.empty"))
+            return
+
+        # ---- the names you typed yourself
+        titles = (report["titles"] if self.all_names
+                  else report["titles"][:RECENT_NAMES])
+        self._section(t("names.section.titles"),
+                      t("names.count", n=len(report["titles"])))
+        if not report["titles"]:
+            self._note_card(t("names.titles.none"))
+        else:
+            self._table(
+                (t("names.titles.head.title"), t("names.titles.head.sessions"),
+                 t("names.titles.head.projects"), t("names.titles.head.span")),
+                [((entry["title"], str(entry["sessions"]),
+                   os.path.basename(entry["projects"][0]) if entry["projects"]
+                   else "—",
+                   f"{entry['first']} … {entry['last']}"), None)
+                 for entry in titles],
+                left={0, 2, 3},
+                actions=[(t("btn.delete_entry"),
+                          lambda e=entry: self.delete_name(e)) for entry in titles])
+            self._names_more(report["titles"], titles)
+        self._note_card(t("names.titles.note") + "\n" + t("names.delete.note"))
+
+        # ---- and the four places each one is kept
+        self._section(t("names.section.places"))
+        self._table(
+            (t("names.places.head.place"), t("names.places.head.count"),
+             t("names.places.head.travels"), t("names.places.head.path")),
+            [((t("names.place." + place["place"]), str(place["count"]),
+               t("names.places.travels."
+                 + ("yes" if place["travels"] else "no")),
+               place["path"].replace(os.path.expanduser("~"), "~")),
+              "MEDIUM" if place["travels"] else None)
+             for place in names.places(report)],
+            left={0, 2, 3})
+        self._note_card(t("names.places.note"))
+
+        # ---- renaming files the old name, it does not replace it
+        if report["former_names"] or report["typed_names"]:
+            self._section(t("names.section.former"))
+            lines = []
+            if report["typed_names"]:
+                lines.append(t("names.former.typed",
+                               names=", ".join(report["typed_names"])))
+            if report["former_names"]:
+                lines.append(t("names.former.note",
+                               count=len(report["former_names"])))
+                lines.append("    " + "\n    ".join(report["former_names"]))
+            self._note_card("\n".join(lines))
+
+        # ---- what the editor appended without being asked
+        opened = (report["opened"] if self.all_names
+                  else report["opened"][:RECENT_NAMES])
+        self._section(t("names.section.opened"),
+                      t("count.files", n=len(report["opened"])))
+        if not report["opened"]:
+            self._note_card(t("names.opened.none"))
+        else:
+            self._table(
+                (t("names.opened.head.path"), t("names.opened.head.count"),
+                 t("names.opened.head.projects")),
+                [((entry["path"], str(entry["count"]), str(entry["projects"])),
+                  "HIGH" if entry["sensitive"] else None)
+                 for entry in opened],
+                left={0},
+                actions=[(t("btn.delete_entry"),
+                          lambda e=entry: self.delete_path(e)) for entry in opened])
+            self._names_more(report["opened"], opened)
+            if report["sensitive"]:
+                self._note_card(t("names.opened.sensitive",
+                                  count=len(report["sensitive"])))
+        self._note_card(t("names.opened.note"))
+
+        # ---- and the honest edge of what this can show
+        self._section(t("names.section.limits"))
+        self._note_card(t("names.limit.certain"))
+        self._note_card(t("names.limit.unknown"))
+
+        self._section(t("names.section.server"))
+        for key in ("names.server.capture", "names.server.plan",
+                    "names.server.retention", "names.server.nodelete",
+                    "names.server.local"):
+            self._note_card(t(key))
+        tk.Frame(self.body, bg=self.c["bg"], height=12).pack()
+
+    def delete_name(self, entry):
+        self._delete_names_entry(
+            t("names.delete.title.headline", title=entry["title"]), entry)
+
+    def delete_path(self, entry):
+        self._delete_names_entry(
+            t("names.delete.path.headline", path=entry["path"]), entry)
+
+    def _delete_names_entry(self, headline, entry):
+        """One row's conversations, through the same guards as every delete.
+
+        The dialog says twice what this does not do, because the whole reason
+        the button exists is that a person asked whether it reaches Anthropic.
+        """
+        paths = names.removable(entry)
+        if not paths:
+            return
+        detail = (t("names.delete.detail", files=len(entry.get("files") or []),
+                    extra=len(entry.get("extra") or []))
+                  + "\n\n" + t("names.delete.local_only"))
+        self._confirm_delete(
+            headline, detail, paths,
+            warning=t("names.delete.active") if entry.get("active") else None,
+            after=self.reload_names)
+
+    def _names_more(self, whole, shown):
+        """The button and the count, but only where something is being held back."""
+        if len(whole) <= RECENT_NAMES:
+            return
+        card = self._card()
+        row = tk.Frame(card, bg=self.c["card"])
+        row.pack(fill="x", padx=14, pady=12)
+        self._button(row, t("btn.show_fewer_names") if self.all_names
+                     else t("btn.show_all_names"),
+                     self.toggle_all_names).pack(side="left")
+        tk.Label(row, text=t("names.shown", shown=len(shown), total=len(whole)),
+                 font=self.f_small, bg=self.c["card"], fg=self.c["muted"],
+                 anchor="w").pack(side="left", padx=(12, 0))
+
+    def toggle_all_names(self):
+        self.all_names = not self.all_names
+        self.render_names()
+        self.canvas.yview_moveto(0)
+
+    def reload_names(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.show_loading(t("loading.names.title"), t("loading.names.detail"))
+        self.btn_refresh.configure(state="disabled")
+        self.chip.configure(text=f"  {t('status.reading')}  ", bg=self.c["muted"])
+
+        def note(done, total):
+            # Called from the worker thread; hand it to Tk's thread.
+            text = t("names.scanning", done=done, total=total)
+            share = (done / total) if total else None
+            self.root.after(0, lambda: (self.status_line.configure(text=text),
+                                        self.update_loading(text, share)))
+
+        def work():
+            try:
+                payload, error = names.build_report(progress=note), None
+            except Exception as exc:               # noqa: BLE001 -- surfaced in the UI
+                payload, error = None, exc
+            self.root.after(0, lambda: self._names_done(payload, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _names_done(self, report, error):
+        self.hide_loading()
+        self.busy = False
+        self.btn_refresh.configure(state="normal")
+        if error is not None:
+            messagebox.showerror(t("app.title"), t("error.data_failed", error=error))
+            return
+        self.names = report
+        self.render_names()
 
     # ----------------------------------------------------- view: observer
 
@@ -2108,6 +2311,7 @@ class App:
             else t("license.intro") if view == "license"
             else t("worktime.intro") if view == "worktime"
             else t("analytics.intro") if view == "analytics"
+            else t("names.intro") if view == "names"
             else t("observer.intro") if view == "observer"
             else t("telemetry.intro") if view == "telemetry"
             else t("instructions.intro") if view == "instructions"
@@ -2124,6 +2328,8 @@ class App:
         elif view == "analytics":
             self.reload_analytics() if self.analytics is None \
                 else self.render_analytics()
+        elif view == "names":
+            self.reload_names() if self.names is None else self.render_names()
         elif view == "observer":
             self.reload_observer() if self.report is None else self.render_observer()
         elif view == "telemetry":
@@ -2150,6 +2356,10 @@ class App:
         if self.view == "analytics":
             self.analytics = None
             self.reload_analytics()
+            return
+        if self.view == "names":
+            self.names = None
+            self.reload_names()
             return
         if self.view == "observer":
             self.report = None
@@ -2231,7 +2441,7 @@ class App:
 
     # -------------------------------------------------------------- delete
 
-    def _confirm_delete(self, headline, detail, paths, warning=None):
+    def _confirm_delete(self, headline, detail, paths, warning=None, after=None):
         parts = [headline, detail]
         if warning:
             parts.append("⚠  " + warning)
@@ -2250,7 +2460,9 @@ class App:
                                  + "\n\n" + lines)
         else:
             self.status_line.configure(text=t("delete.done", count=deleted))
-        self.reload_data()
+        # The data view is the usual caller; the names view reloads itself, and
+        # its own inventory is what has just gone stale.
+        (after or self.reload_data)()
 
     def delete_project(self, project):
         self._confirm_delete(
@@ -2363,7 +2575,7 @@ class App:
     def copy_json(self):
         payload = ({"check": self.result, "license": self.license, "data": self.data,
                     "worktime": self.worktime, "analytics": self.analytics,
-                    "observer": self.report,
+                    "names": self.names, "observer": self.report,
                     "instructions": self.rules}.get(self.view))
         if payload is None:
             return

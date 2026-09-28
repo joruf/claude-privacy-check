@@ -7,8 +7,8 @@ import json
 import os
 import sys
 
-from . import (about, analytics, core, data, instructions, observer, telemetry,
-               watch, worktime)
+from . import (about, analytics, core, data, instructions, names, observer,
+               telemetry, watch, worktime)
 from . import license as licence
 from .i18n import (apply_startup_language, available_languages, current_language,
                    save_preference, t)
@@ -355,6 +355,99 @@ def _print_project_table(projects):
              f"{entry['first'] or '—'} … {entry['last'] or '—'}")
             for entry in projects]
     _print_table(head, rows, left={0, 5})
+
+
+def show_names(as_json):
+    report = names.build_report()
+    if as_json:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+        return 0
+
+    print(paint(t("names.intro"), "INFO"))
+    print()
+    if not report["titles"] and not report["opened"]:
+        print("  " + t("names.empty"))
+        return 0
+
+    print("  " + t("names.subtitle", titles=len(report["titles"]),
+                   opened=len(report["opened"]),
+                   transcripts=report["transcripts"]))
+
+    print()
+    print(paint(f"── {t('names.section.titles')} ──", "INFO"))
+    if not report["titles"]:
+        print("  " + t("names.titles.none"))
+    else:
+        _print_table(
+            (t("names.titles.head.title"), t("names.titles.head.sessions"),
+             t("names.titles.head.projects"), t("names.titles.head.span")),
+            [(clip(entry["title"], 44), str(entry["sessions"]),
+              clip(os.path.basename(entry["projects"][0]) if entry["projects"]
+                   else "—", 22),
+              f"{entry['first']} … {entry['last']}")
+             for entry in report["titles"]],
+            left={0, 2, 3})
+    print("  " + paint(t("names.titles.note"), "INFO"))
+
+    print()
+    print(paint(f"── {t('names.section.places')} ──", "INFO"))
+    _print_table(
+        (t("names.places.head.place"), t("names.places.head.count"),
+         t("names.places.head.travels"), t("names.places.head.path")),
+        [(t("names.place." + place["place"]), str(place["count"]),
+          t("names.places.travels." + ("yes" if place["travels"] else "no")),
+          clip(place["path"].replace(os.path.expanduser("~"), "~"), 52))
+         for place in names.places(report)],
+        left={0, 2, 3})
+    print("  " + paint(t("names.places.note"), "INFO"))
+
+    if report["former_names"] or report["typed_names"]:
+        print()
+        print(paint(f"── {t('names.section.former')} ──", "INFO"))
+        if report["typed_names"]:
+            print("  " + t("names.former.typed",
+                           names=", ".join(report["typed_names"])))
+        if report["former_names"]:
+            print("  " + t("names.former.note", count=len(report["former_names"])))
+            for name in report["former_names"]:
+                print(f"      {name}")
+
+    print()
+    print(paint(f"── {t('names.section.opened')} ──", "INFO"))
+    if not report["opened"]:
+        print("  " + t("names.opened.none"))
+    else:
+        rows = []
+        for entry in report["opened"]:
+            mark = paint("!", "HIGH") if entry["sensitive"] else " "
+            rows.append((f"{mark} " + clip(entry["path"], 60), str(entry["count"]),
+                         str(entry["projects"])))
+        _print_table(
+            ("  " + t("names.opened.head.path"), t("names.opened.head.count"),
+             t("names.opened.head.projects")),
+            rows, left={0})
+        if report["sensitive"]:
+            print("  " + paint(t("names.opened.sensitive",
+                                 count=len(report["sensitive"])), "HIGH"))
+    print("  " + paint(t("names.opened.note"), "INFO"))
+
+    print()
+    print(paint(f"── {t('names.section.limits')} ──", "INFO"))
+    print("  " + paint(t("names.limit.certain"), "INFO"))
+    print("  " + paint(t("names.limit.unknown"), "INFO"))
+
+    print()
+    print(paint(f"── {t('names.section.server')} ──", "INFO"))
+    for key in ("names.server.capture", "names.server.plan",
+                "names.server.retention", "names.server.nodelete",
+                "names.server.local"):
+        print("  " + paint(t(key), "INFO"))
+    print("  " + paint(t("names.delete.note"), "INFO"))
+
+    print()
+    print(paint(t(names.verdict_key(report)),
+                "HIGH" if report["sensitive"] else "OK"))
+    return 0
 
 
 def show_observer(as_json):
@@ -716,6 +809,7 @@ def build_parser(lang_codes):
     p.add_argument("--worktime", action="store_true", help=t("cli.help.worktime"))
     p.add_argument("--observer", action="store_true", help=t("cli.help.observer"))
     p.add_argument("--analytics", action="store_true", help=t("cli.help.analytics"))
+    p.add_argument("--names", action="store_true", help=t("cli.help.names"))
     p.add_argument("--telemetry", action="store_true", help=t("cli.help.telemetry"))
     p.add_argument("--instructions", action="store_true",
                    help=t("cli.help.instructions"))
@@ -753,7 +847,7 @@ def _wants_gui(args):
     if args.project is not None:
         return False
     # bare launch, --language and the view flags (--data / --license / --worktime
-    # / --observer / --analytics / --telemetry / --instructions) → window
+    # / --observer / --analytics / --names / --telemetry / --instructions) → window
     return True
 
 
@@ -797,6 +891,7 @@ def main(argv=None):
                        "worktime" if args.worktime else
                        "observer" if args.observer else
                        "analytics" if args.analytics else
+                       "names" if args.names else
                        "telemetry" if args.telemetry else
                        "instructions" if args.instructions else "check")
     if args.license:
@@ -809,6 +904,8 @@ def main(argv=None):
         return show_observer(args.json)
     if args.analytics:
         return show_analytics(args.json)
+    if args.names:
+        return show_names(args.json)
     if args.telemetry:
         return show_telemetry(args.json)
     if args.instructions:
