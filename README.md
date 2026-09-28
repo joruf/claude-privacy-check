@@ -27,8 +27,14 @@ my data?"*.
 
 Two things follow, and the interface says so as well:
 
-- Deleting local history does not remove the server-side copy, which expires by
-  itself after 30 days under commercial terms.
+- Deleting local history does not remove the server-side copy, and that copy
+  does not expire by itself. Conversations under Claude for Work are kept in the
+  product for as long as they exist, and a Claude Code session captured through
+  the Enterprise Compliance API is kept for **6 years** by default. Anthropic's
+  own comparison grants remote sessions "6 years, unless a user deletes the
+  session sooner"; the local session column has no such clause, and local
+  sessions carry no `deleted_at` field at all. The 30 days in this README refer
+  to the **local** transcript sweep (`cleanupPeriodDays`), nothing else.
 - The baseline is only as trustworthy as your own account. It is no protection
   against someone with root on the machine.
 
@@ -86,7 +92,7 @@ account e-mail, the organisation id and every watched path.
 
 ## What it looks like
 
-The window has eight views and a menu bar; the command line does everything the
+The window has nine views and a menu bar; the command line does everything the
 window does.
 
 ### Check — assessment and deviation from the baseline
@@ -100,6 +106,8 @@ window does.
 ### Working time — the timesheet those transcripts add up to
 
 ### Admin dashboard — the row your organisation already sees
+
+### Names and paths — what the conversations carry besides your sentences
 
 ### Observer view — what a triage over that data would surface
 
@@ -274,6 +282,48 @@ Three limits, stated in the view as well:
   dashboard shows the number anyway. A model with no published rate is reported
   as unpriced rather than quietly valued at zero.
 
+### Names and paths
+
+Two things travel inside a session that nobody types as a message, and both are
+more revealing than the sentences around them.
+
+**The name you gave the tab.** It is not a label on the surface. It is written
+into the transcript as a record of its own (`{"type": "custom-title", ...}`),
+into a `custom-title.json` beside it, into `~/.claude/sessions/<pid>.json`, and
+into the editor extension's log — four places, and the view names all four,
+because deleting a name means visiting each. Read as a list, those names are an
+inventory of what you worked on, and nothing in it separates the company's
+projects from your own. `formerNames` is worth its own line: renaming a tab does
+not replace the old name, it files it.
+
+Each row in both tables has a **Delete locally** button. It removes the
+conversations that carry that entry, through the same guards as every other
+deletion here, and the dialog says twice what it does not do. Whole files only:
+nothing is cut out of a transcript, because a rewritten transcript breaks
+`--resume` and changes nothing on the server. Deleting a row that names
+`.../pmtool/.env` removes the *conversations that mention it*, never the file
+itself — pinned by a test, because getting that backwards would delete the
+user's own credentials file.
+
+**The file you had open in the editor.** While the extension is connected, the
+absolute path of the active editor tab is appended to your prompt, whether or
+not the file has anything to do with the question. The view lists those paths by
+how often they appeared, and marks the ones whose *name alone* gives their kind
+away — `.env`, `id_rsa`, `credentials.json`, `*.pem`. A hit does not mean the
+contents left; it means the sentence "this person had that file open" did. The
+rule is deliberately narrow: a noun has to begin a path segment, so a
+`TokenParser.php` is not flagged and the list stays worth reading.
+
+What the view claims, and what it refuses to claim:
+
+- **Certain, and readable right here:** the name is a record *inside* the
+  conversation file rather than a setting beside it, and the opened-file path is
+  part of the prompt text.
+- **Not decidable from this machine:** whether the server-side copy carries the
+  same records, and so whether an organisation data export contains them.
+  Something living inside the conversation is far more likely to travel with it
+  than a local setting, so the view says assume it travels.
+
 ### Observer view
 
 Volume feels like protection — 200 sessions, hundreds of megabytes, surely nobody
@@ -363,6 +413,7 @@ claude-privacy-check --list-data     # local history inventory
 claude-privacy-check --delete PATH   # delete below ~/.claude, asks first
 claude-privacy-check --cli --worktime      # working time (terminal)
 claude-privacy-check --cli --analytics     # the admin dashboard (terminal)
+claude-privacy-check --cli --names         # tab names and opened files (terminal)
 claude-privacy-check --cli --observer      # triage summary (terminal)
 claude-privacy-check --cli --telemetry     # outbound queue (terminal)
 claude-privacy-check --cli --instructions  # instruction files (terminal)
@@ -370,6 +421,7 @@ claude-privacy-check --cli --instructions  # instruction files (terminal)
 claude-privacy-check --data          # GUI: local data view
 claude-privacy-check --worktime      # GUI: working time
 claude-privacy-check --analytics     # GUI: admin dashboard
+claude-privacy-check --names         # GUI: names and paths
 claude-privacy-check --observer      # GUI: observer view
 claude-privacy-check --telemetry     # GUI: outbound telemetry queue
 claude-privacy-check --instructions  # GUI: instructions view
@@ -405,6 +457,7 @@ claude_privacy_check/
 ├── data.py                       local history inventory and guarded deletion
 ├── worktime.py                   working time from the transcript timestamps
 ├── analytics.py                  the dashboard row the organisation sees
+├── names.py                      tab names and opened-file paths in the transcripts
 ├── observer.py                   what a triage over that data would surface
 ├── instructions.py               instruction files loaded into sessions
 ├── watch.py                      notification and systemd units
