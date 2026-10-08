@@ -31,11 +31,13 @@ Three limits, stated in the interface as well:
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
+from . import period
 from .core import collect_account_and_mcp
 from .data import decode_project_path, transcript_files
 from .i18n import t
@@ -202,8 +204,12 @@ def _count_code(name, payload, loc):
                 loc["Edit"] += _lines_of(edit.get("new_string"))
 
 
-def build_report(progress=None):
-    """Every figure the organisation's analytics would hold about this account."""
+def build_report(progress=None, span=None):
+    """Every figure the organisation's analytics would hold about this account.
+
+    ``span`` limits it to a pair of local dates (see ``period``), the way the
+    real dashboard is read for a month; None takes the whole history.
+    """
     account, _mcp = collect_account_and_mcp()
     stamp_cache = {}
 
@@ -220,26 +226,34 @@ def build_report(progress=None):
     events = own = assistant = messages = 0
     unreadable = 0
     sessions = 0
+    transcripts = 0
+    in_span = set()                 # project buckets with a line inside the span
 
     entries = list(transcript_files())
     for index, (bucket, path) in enumerate(entries):
         if progress:
             progress(index, len(entries))
+        try:
+            if period.predates(span, os.path.getmtime(path)):
+                continue
+        except OSError:
+            pass                    # left to the open below, which counts it
         entry = projects.get(bucket)
         if entry is None:
             entry = projects[bucket] = {
                 "bucket": bucket, "label": decode_project_path(bucket),
                 "sessions": 0, "messages": 0, "own": 0, "bytes": 0,
                 "first": None, "last": None}
-        if os.sep + SUBAGENT_DIR + os.sep not in path:
-            entry["sessions"] += 1
-            sessions += 1
+        # Over a period a transcript counts once a line of it lies inside; over
+        # the whole history every transcript counts, readable or not.
+        counted = span is None
+        size = 0
         try:
-            entry["bytes"] += os.path.getsize(path)
+            size = os.path.getsize(path)
             handle = open(path, "rb")
         except OSError:
             unreadable += 1
-            continue
+            handle = io.BytesIO()   # nothing to read; still counted below
 
         with handle:
             for line in handle:
@@ -247,6 +261,12 @@ def build_report(progress=None):
                 day = None
                 if found is not None:
                     day, hour, weekday = _local(found.group(1), stamp_cache)
+                    if not period.contains(span, day):
+                        continue
+                elif span is not None:
+                    continue        # cannot be placed inside the period
+                counted = True
+                if found is not None:
                     events += 1
                     hours[hour] += 1
                     weekdays[weekday] += 1
@@ -296,12 +316,24 @@ def build_report(progress=None):
                     elif name == "Skill":
                         skills[payload.get("skill") or "?"] += 1
 
+        if counted:
+            in_span.add(bucket)
+            transcripts += 1
+            entry["bytes"] += size
+            if os.sep + SUBAGENT_DIR + os.sep not in path:
+                entry["sessions"] += 1
+                sessions += 1
+
     if progress:
         progress(len(entries), len(entries))
 
-    return _assemble(account, len(entries), sessions, models, month_models,
-                     projects, tools, skills, loc, hours, weekdays, days,
-                     subagents, events, own, assistant, messages, unreadable)
+    projects = {bucket: entry for bucket, entry in projects.items()
+                if bucket in in_span}
+    report = _assemble(account, transcripts, sessions, models, month_models,
+                       projects, tools, skills, loc, hours, weekdays, days,
+                       subagents, events, own, assistant, messages, unreadable)
+    report["period"] = period.serialise(span)
+    return report
 
 
 def _assemble(account, transcripts, sessions, models, month_models, projects,

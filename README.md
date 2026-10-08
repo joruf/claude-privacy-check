@@ -209,8 +209,8 @@ start of day, breaks, end of day, the Sunday evening, the hour after midnight.
 Nobody set up a time clock. One exists anyway, and it is finer-grained than any
 clock a works council ever negotiated over.
 
-This view runs that reconstruction — per day, week, weekday, hour of the day and
-project — on the local copy, in this machine's time zone, which is exactly what
+This view runs that reconstruction — per day, week, month, weekday, hour of the
+day and project — on the local copy, in this machine's time zone, which is exactly what
 anyone holding a copy of the data could run. It is also simply useful: it is the
 closest thing to an honest answer to "how long did that actually take".
 
@@ -221,6 +221,16 @@ The method, stated in the interface as well:
 - days are cut at local midnight, the way a timesheet cuts them
 - it is a **lower bound** — work without Claude Code leaves no timestamp here,
   and these are figures for activity, not attendance
+
+#### Period
+
+Working time, the admin dashboard and the observer view each open with a
+**Period** box: *current month*, *last month* (the default), *last 3 months* —
+the running month and the two before it — or *whole history*. Every figure on
+the page follows it. Working time and the dashboard go by the timestamp of each
+line; the observer view goes by the date a transcript was last written, and its
+sweep then covers only those transcripts. In the terminal the same choice is
+`--period current-month | last-month | last-3-months | all`.
 
 ### Admin dashboard
 
@@ -415,6 +425,7 @@ claude-privacy-check --cli --worktime      # working time (terminal)
 claude-privacy-check --cli --analytics     # the admin dashboard (terminal)
 claude-privacy-check --cli --names         # tab names and opened files (terminal)
 claude-privacy-check --cli --observer      # triage summary (terminal)
+claude-privacy-check --cli --worktime --period last-3-months  # any of the three, other period
 claude-privacy-check --cli --telemetry     # outbound queue (terminal)
 claude-privacy-check --cli --instructions  # instruction files (terminal)
 

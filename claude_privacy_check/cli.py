@@ -8,7 +8,7 @@ import os
 import sys
 
 from . import (about, analytics, core, data, instructions, names, observer,
-               telemetry, watch, worktime)
+               period, telemetry, watch, worktime)
 from . import license as licence
 from .i18n import (apply_startup_language, available_languages, current_language,
                    save_preference, t)
@@ -130,8 +130,9 @@ def show_license(as_json):
     return 0 if report["present"] else 1
 
 
-def show_analytics(as_json):
-    report = analytics.build_report()
+def show_analytics(as_json, choice=period.DEFAULT):
+    span = period.bounds(choice)
+    report = analytics.build_report(span=span)
     if as_json:
         print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
         return 0
@@ -139,8 +140,10 @@ def show_analytics(as_json):
     group = analytics.grouped
     print(paint(t("analytics.intro"), "INFO"))
     print()
+    print(period.describe(choice, span))
+    print()
     if not report["sessions"]:
-        print("  " + t("analytics.empty"))
+        print("  " + (t("period.empty") if span else t("analytics.empty")))
         return 0
 
     totals = report["totals"]
@@ -450,8 +453,9 @@ def show_names(as_json):
     return 0
 
 
-def show_observer(as_json):
-    report = observer.build_report()
+def show_observer(as_json, choice=period.DEFAULT):
+    span = period.bounds(choice)
+    report = observer.build_report(span=span)
     if as_json:
         print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
         return 0
@@ -459,6 +463,8 @@ def show_observer(as_json):
     account = report["account"]
     plan = core.plan_label(account)
     print(paint(t("observer.intro"), "INFO"))
+    print()
+    print(period.describe(choice, span))
     print()
     print(paint(f"── {t('observer.section.identity')} ──", "INFO"))
     print("  " + t("observer.identity.line", org=account.get("organizationName", "—"),
@@ -498,6 +504,8 @@ def show_observer(as_json):
         for sample in category["samples"]:
             print(f"      {sample['date']}  {sample['project']}")
             print(f"        {clip(sample['excerpt'], 110)}")
+    if span:
+        print("  " + paint(t("observer.period.note"), "INFO"))
     print()
     print(paint(t(observer.verdict_key(report)), "OK"))
     return 0
@@ -595,16 +603,19 @@ def show_telemetry(as_json):
     return 0
 
 
-def show_worktime(as_json):
-    report = worktime.build_report()
+def show_worktime(as_json, choice=period.DEFAULT):
+    span = period.bounds(choice)
+    report = worktime.build_report(span=span)
     if as_json:
         print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
         return 0
 
     print(paint(t("worktime.intro"), "INFO"))
     print()
+    print(period.describe(choice, span))
+    print()
     if not report["active_days"]:
-        print("  " + t("worktime.empty"))
+        print("  " + (t("period.empty") if span else t("worktime.empty")))
         return 0
 
     print(paint(f"── {t('worktime.section.overview')} ──", "INFO"))
@@ -662,6 +673,15 @@ def show_worktime(as_json):
               f"{worktime.human_minutes(minutes) if minutes else '—':>9}")
     print("  " + paint(t("worktime.hours.note", start=report["business_start"],
                          end=report["business_end"]), "INFO"))
+
+    print()
+    print(paint(f"── {t('worktime.section.months')} ──", "INFO"))
+    peak = max(m["active"] for m in report["months"]) or 1
+    for month in report["months"]:
+        print(f"  {month['month']:<9} {bar(month['active'] / peak)} "
+              f"{worktime.human_minutes(month['active']):>9}  "
+              f"{t('worktime.short.days', n=month['days'])}")
+    print("  " + paint(t("worktime.months.note"), "INFO"))
 
     print()
     print(paint(f"── {t('worktime.section.weeks')} ──", "INFO"))
@@ -807,6 +827,8 @@ def build_parser(lang_codes):
                    metavar="DIR", help=t("cli.help.project"))
     p.add_argument("--list-data", action="store_true", help=t("cli.help.list_data"))
     p.add_argument("--worktime", action="store_true", help=t("cli.help.worktime"))
+    p.add_argument("--period", choices=period.CHOICES, default=period.DEFAULT,
+                   help=t("cli.help.period"))
     p.add_argument("--observer", action="store_true", help=t("cli.help.observer"))
     p.add_argument("--analytics", action="store_true", help=t("cli.help.analytics"))
     p.add_argument("--names", action="store_true", help=t("cli.help.names"))
@@ -893,17 +915,18 @@ def main(argv=None):
                        "analytics" if args.analytics else
                        "names" if args.names else
                        "telemetry" if args.telemetry else
-                       "instructions" if args.instructions else "check")
+                       "instructions" if args.instructions else "check",
+                       args.period)
     if args.license:
         return show_license(args.json)
     if args.list_data:
         return list_data(args.json)
     if args.worktime:
-        return show_worktime(args.json)
+        return show_worktime(args.json, args.period)
     if args.observer:
-        return show_observer(args.json)
+        return show_observer(args.json, args.period)
     if args.analytics:
-        return show_analytics(args.json)
+        return show_analytics(args.json, args.period)
     if args.names:
         return show_names(args.json)
     if args.telemetry:

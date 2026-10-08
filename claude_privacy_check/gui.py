@@ -29,7 +29,7 @@ from tkinter import font as tkfont
 from tkinter import messagebox
 
 from . import (about, analytics, core, data, instructions, license as licence,
-               names, observer, telemetry, worktime)
+               names, observer, period, telemetry, worktime)
 from .icons import SIZES, icon_png
 from .i18n import (available_languages, current_language, save_preference,
                    set_language, t)
@@ -111,7 +111,7 @@ def detect_dark():
 
 
 class App:
-    def __init__(self, root, start_view="check"):
+    def __init__(self, root, start_view="check", start_period=period.DEFAULT):
         self.root = root
         self.c = DARK if detect_dark() else LIGHT
         self.result = None
@@ -138,6 +138,10 @@ class App:
         self.all_days = False        # working time: whole log instead of recent
         self.all_projects = False    # admin view: whole project table
         self.all_names = False       # names view: whole name and path tables
+        # The time-based views each keep their own period; all open on the same.
+        self.periods = {view: start_period
+                        for view in ("worktime", "analytics", "observer")}
+        self.period_var = None       # the box on the page currently shown
         self.wrappable = []          # labels whose wraplength follows resizing
         self.busy = False
 
@@ -870,9 +874,11 @@ class App:
                     last=report["last_day"] or "—", sessions=report["sessions"],
                     stamps=report["stamps"]))
 
+        self._period_bar("worktime", report)
         if not report["active_days"]:
             self._section(t("worktime.section.overview"))
-            self._note_card(t("worktime.empty"))
+            self._note_card(t("period.empty") if report["period"]
+                            else t("worktime.empty"))
             return
 
         self._section(t("worktime.section.overview"))
@@ -905,6 +911,17 @@ class App:
         tk.Frame(card, bg=self.c["card"], height=10).pack()
         self._note_card(t("worktime.hours.note", start=report["business_start"],
                           end=report["business_end"]))
+
+        self._section(t("worktime.section.months"))
+        card = self._meter_card()
+        peak = max(m["active"] for m in report["months"]) or 1
+        for month in report["months"]:
+            self._meter(card, month["month"],
+                        worktime.human_minutes(month["active"]) + "  ·  "
+                        + t("worktime.short.days", n=month["days"]),
+                        month["active"] / peak, label_width=8)
+        tk.Frame(card, bg=self.c["card"], height=10).pack()
+        self._note_card(t("worktime.months.note"))
 
         weeks = report["weeks"][-RECENT_WEEKS:]
         self._section(t("worktime.section.weeks"))
@@ -1070,6 +1087,46 @@ class App:
         meta.pack(fill="x", padx=10, pady=(0, 7))
         self.wrappable.append((meta, 90))
 
+    def _period_bar(self, view, report):
+        """The selection box a time-based view opens with, and its dates."""
+        row = tk.Frame(self.body, bg=self.c["bg"])
+        row.pack(fill="x", padx=20, pady=(16, 0))
+        tk.Label(row, text=t("period.label"), font=self.f_head, bg=self.c["bg"],
+                 fg=self.c["fg"]).pack(side="left")
+        names = {t(f"period.{choice}"): choice for choice in period.CHOICES}
+        # Kept on self: a StringVar that is collected empties the box.
+        self.period_var = tk.StringVar(value=t(f"period.{self.periods[view]}"))
+        box = tk.OptionMenu(row, self.period_var, *names,
+                            command=lambda name: self.change_period(view, names[name]))
+        box.configure(font=self.f_body, bg=self.c["btn"], fg=self.c["btn_fg"],
+                      activebackground=self.c["btn_active"],
+                      activeforeground=self.c["btn_fg"], relief="flat",
+                      highlightthickness=1, highlightbackground=self.c["border"],
+                      bd=0, padx=10, pady=4, cursor="hand2")
+        box["menu"].configure(font=self.f_body, bg=self.c["card"], fg=self.c["fg"],
+                              activebackground=self.c["btn_active"],
+                              activeforeground=self.c["fg"])
+        box.pack(side="left", padx=(10, 0))
+        tk.Label(row, text=period.range_text(report["period"]), font=self.f_small,
+                 bg=self.c["bg"], fg=self.c["muted"]).pack(side="left", padx=(10, 0))
+
+    def change_period(self, view, choice):
+        if self.busy:              # a scan is running; keep what it is scanning
+            self.period_var.set(t(f"period.{self.periods[view]}"))
+            return
+        if choice == self.periods[view]:
+            return
+        self.periods[view] = choice
+        if view == "worktime":
+            self.worktime = None
+            self.reload_worktime()
+        elif view == "analytics":
+            self.analytics = None
+            self.reload_analytics()
+        else:
+            self.report = None
+            self.reload_observer()
+
     def toggle_all_days(self):
         self.all_days = not self.all_days
         self.render_worktime()
@@ -1092,7 +1149,8 @@ class App:
 
         def work():
             try:
-                payload, error = worktime.build_report(progress=note), None
+                payload, error = worktime.build_report(
+                    progress=note, span=period.bounds(self.periods["worktime"])), None
             except Exception as exc:               # noqa: BLE001 -- surfaced in the UI
                 payload, error = None, exc
             self.root.after(0, lambda: self._worktime_done(payload, error))
@@ -1133,9 +1191,11 @@ class App:
                            sessions=report["sessions"],
                            events=group(report["events"])))
 
+        self._period_bar("analytics", report)
         if not report["sessions"]:
             self._section(t("analytics.section.summary"))
-            self._note_card(t("analytics.empty"))
+            self._note_card(t("period.empty") if report["period"]
+                            else t("analytics.empty"))
             return
 
         # ---- what the dashboard holds about this account
@@ -1409,7 +1469,8 @@ class App:
 
         def work():
             try:
-                payload, error = analytics.build_report(progress=note), None
+                payload, error = analytics.build_report(
+                    progress=note, span=period.bounds(self.periods["analytics"])), None
             except Exception as exc:               # noqa: BLE001 -- surfaced in the UI
                 payload, error = None, exc
             self.root.after(0, lambda: self._analytics_done(payload, error))
@@ -1634,6 +1695,7 @@ class App:
                 days=report["active_days"],
                 size=data.human_bytes(report["bytes"])))
 
+        self._period_bar("observer", report)
         self._section(t("observer.section.identity"))
         account = report["account"]
         plan = core.plan_label(account)
@@ -1663,7 +1725,8 @@ class App:
         self._section(t("observer.section.sweep"))
         for category in report["categories"]:
             self._sweep_card(category)
-        self._note_card(t("observer.sweep.note"))
+        self._note_card(t("observer.sweep.note")
+                        + ("\n" + t("observer.period.note") if report["period"] else ""))
         tk.Frame(self.body, bg=self.c["bg"], height=12).pack()
 
     def _sweep_card(self, category):
@@ -1715,7 +1778,8 @@ class App:
 
         def work():
             try:
-                payload, error = observer.build_report(progress=note), None
+                payload, error = observer.build_report(
+                    progress=note, span=period.bounds(self.periods["observer"])), None
             except Exception as exc:               # noqa: BLE001 -- surfaced in the UI
                 payload, error = None, exc
             self.root.after(0, lambda: self._observer_done(payload, error))
@@ -2585,7 +2649,7 @@ class App:
         self.status_line.configure(text=t("status.copied"))
 
 
-def run(start_view="check"):
+def run(start_view="check", start_period=period.DEFAULT):
     try:
         # className sets WM_CLASS so the menu entry (StartupWMClass) finds the
         # window and the taskbar shows the right icon.
@@ -2593,6 +2657,6 @@ def run(start_view="check"):
     except tk.TclError as exc:
         print(t("error.no_display", error=exc), file=sys.stderr)
         return 1
-    App(root, start_view)
+    App(root, start_view, start_period)
     root.mainloop()
     return 0
