@@ -18,6 +18,7 @@ import re
 from collections import Counter
 from datetime import datetime
 
+from . import period
 from .core import collect_account_and_mcp
 from .data import as_date, decode_project_path, transcript_files
 
@@ -121,8 +122,13 @@ def _excerpt(line_bytes, match):
     return ("…" if start > 0 else "") + snippet + ("…" if end < len(line_bytes) else "")
 
 
-def build_report(progress=None):
-    """Everything a mechanical triage would extract. Reads, never writes."""
+def build_report(progress=None, span=None):
+    """Everything a mechanical triage would extract. Reads, never writes.
+
+    ``span`` limits the triage to the transcripts last written inside a pair of
+    local dates (see ``period``) -- the same date the pattern goes by. None
+    takes every transcript on disk.
+    """
     account, _mcp = collect_account_and_mcp()
     cased_re, folded_re = _combined()
 
@@ -133,6 +139,7 @@ def build_report(progress=None):
     hits = {slug: {"count": 0, "sessions": set(), "samples": []}
             for slug, _key, _conf, _patterns in CATEGORIES}
     total_bytes = 0
+    included = 0
     entries = list(transcript_files())
 
     for index, (bucket, path) in enumerate(entries):
@@ -143,6 +150,9 @@ def build_report(progress=None):
         except OSError:
             continue
         stamp = datetime.fromtimestamp(st.st_mtime)
+        if not period.contains(span, stamp.date()):
+            continue
+        included += 1
         hours[stamp.hour] += 1
         weekdays[stamp.weekday()] += 1
         days.add(stamp.date())
@@ -205,8 +215,9 @@ def build_report(progress=None):
     return {
         "account": account,
         "projects": sorted(projects.values(), key=lambda p: -p["bytes"]),
-        "sessions": len(entries),
+        "sessions": len(entries) if span is None else included,
         "bytes": total_bytes,
+        "period": period.serialise(span),
         "active_days": len(days),
         "hours": {h: hours.get(h, 0) for h in range(24)},
         "weekdays": {d: weekdays.get(d, 0) for d in range(7)},

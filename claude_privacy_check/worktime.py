@@ -26,10 +26,12 @@ Reads, never writes.
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 
+from . import period
 from .data import decode_project_path, transcript_files
 from .observer import BUSINESS_END, BUSINESS_START
 
@@ -136,11 +138,13 @@ def _day_record(day, minutes, projects, prompts):
     }, hours
 
 
-def build_report(progress=None):
-    """Working time per day, week, weekday, hour and project.
+def build_report(progress=None, span=None):
+    """Working time per day, week, month, weekday, hour and project.
 
-    ``days`` comes newest first -- it reads as a log. ``weeks`` comes oldest
-    first, because a run of weeks reads as a trend.
+    ``span`` limits everything to a pair of local dates (see ``period``);
+    None takes the whole history. ``days`` comes newest first -- it reads as a
+    log. ``weeks`` and ``months`` come oldest first, because a run of them
+    reads as a trend.
     """
     cache = {}
     labels = {}
@@ -149,6 +153,7 @@ def build_report(progress=None):
     project_minutes = defaultdict(set)
     project_days = defaultdict(set)
     stamps = 0
+    contributing = 0
 
     entries = list(transcript_files())
     for index, (bucket, path) in enumerate(entries):
@@ -156,9 +161,12 @@ def build_report(progress=None):
             progress(index, len(entries))
         label = labels.setdefault(bucket, decode_project_path(bucket))
         try:
+            if period.predates(span, os.path.getmtime(path)):
+                continue
             handle = open(path, "rb")
         except OSError:
             continue
+        touched = False
         with handle:
             # Line by line: a transcript averages several kilobytes per line,
             # so the loop is short and the classification per line is exact.
@@ -167,6 +175,9 @@ def build_report(progress=None):
                 if found is None:
                     continue
                 minute, day = _stamp_to_local(found.group(1), cache)
+                if not period.contains(span, day):
+                    continue
+                touched = True
                 stamps += 1
                 bucket_day = collected[day]
                 bucket_day["minutes"].add(minute)
@@ -175,6 +186,7 @@ def build_report(progress=None):
                     bucket_day["prompts"] += 1
                 project_minutes[label].add(minute)
                 project_days[label].add(day)
+        contributing += touched
 
     if progress:
         progress(len(entries), len(entries))
@@ -183,6 +195,7 @@ def build_report(progress=None):
     hour_active = Counter()
     weekday_active = Counter()
     weeks = defaultdict(lambda: {"active": 0, "days": 0})
+    months = defaultdict(lambda: {"active": 0, "days": 0})
     for day in sorted(collected, reverse=True):
         gathered = collected[day]
         record, hours = _day_record(day, gathered["minutes"],
@@ -194,6 +207,9 @@ def build_report(progress=None):
         entry = weeks[(year, week)]
         entry["active"] += record["active"]
         entry["days"] += 1
+        month = months[day.strftime("%Y-%m")]
+        month["active"] += record["active"]
+        month["days"] += 1
 
     active = [d["active"] for d in days]
     total_active = sum(active)
@@ -219,6 +235,9 @@ def build_report(progress=None):
         "weeks": [{"year": year, "week": week, "active": entry["active"],
                    "days": entry["days"]}
                   for (year, week), entry in sorted(weeks.items())],
+        "months": [{"month": month, "active": entry["active"],
+                    "days": entry["days"]}
+                   for month, entry in sorted(months.items())],
         "projects": projects,
         "active_days": len(days),
         "first_day": days[-1]["date"] if days else None,
@@ -246,8 +265,10 @@ def build_report(progress=None):
                          if d["active"] > DAY_TARGET_HOURS * 60),
         "long_weeks": sum(1 for w in weeks.values()
                           if w["active"] > WEEK_TARGET_HOURS * 60),
-        "sessions": len(entries),
+        # Over a period: the transcripts that contributed to it, not the stock.
+        "sessions": len(entries) if span is None else contributing,
         "stamps": stamps,
+        "period": period.serialise(span),
         "idle_gap": IDLE_GAP,
         "day_target": DAY_TARGET_HOURS,
         "week_target": WEEK_TARGET_HOURS,

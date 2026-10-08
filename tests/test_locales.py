@@ -44,6 +44,9 @@ DYNAMIC_KEYS = (
     | {f"analytics.mix.{purpose}" for purpose in
        ("inspect", "write", "delegate", "confirm", "other")}
     | {f"analytics.consequence.{step}" for step in ("hidden", "prepare", "lower")}
+    # The period box lists every choice by name.
+    | {f"period.{choice}" for choice in
+       ("current-month", "last-month", "last-3-months", "all")}
 )
 
 
