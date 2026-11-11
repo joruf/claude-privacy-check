@@ -90,6 +90,26 @@ account e-mail, the organisation id and every watched path.
 | Monitoring | `systemd --user` and `notify-send`, both standard on desktop installs |
 | Dependencies | none |
 
+## Executables
+
+A ready-made single-file executable for Linux is on the
+[Releases page](https://github.com/joruf/claude-privacy-check/releases) (the
+program is Linux only, so there is no Windows file). Download it, `chmod +x`
+it and start it, no Python needed. It does not install a menu entry or a
+`~/.local/bin` link; use `./install.sh` from a checkout for that. The
+`--watch-install` monitoring works with it.
+
+To build one yourself, on Linux:
+
+```bash
+python3 build-exe.py      # -> dist/claude-privacy-check-linux-x86_64-<version>-build<build>
+```
+
+The script creates its own build environment in `build/exe/`, installs
+PyInstaller and starts the result once with `--version`. Options: `--clean`
+rebuilds the environment, `--keep-env` reuses it. It needs `python3-venv` and
+`python3-tk`.
+
 ## What it looks like
 
 The window has nine views and a menu bar; the command line does everything the

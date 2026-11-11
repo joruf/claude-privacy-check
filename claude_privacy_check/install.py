@@ -26,6 +26,9 @@ HICOLOR = os.path.join(
     "icons", "hicolor")
 RUN_PY = os.path.join(APP_DIR, "run.py")
 
+#: True inside the single-file executable that build-exe.py produces.
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+
 # Set by prepare_launch() when the process was started via run.py for the GUI.
 _gui_pending = None
 
@@ -56,6 +59,9 @@ def _icons_ok():
 def pending_steps():
     """Ordered (step_id, translation_key) for work that is still outstanding."""
     steps = []
+    if IS_FROZEN:
+        # The single-file executable has no run.py or .desktop file to link to.
+        return steps
     if not _link_ok():
         steps.append(("link", "install.step.link"))
     if not _icons_ok():
@@ -119,6 +125,8 @@ def ensure(progress=None, force=False):
 
     Returns the list of step ids that were run.
     """
+    if IS_FROZEN:
+        return []
     steps = pending_steps() if not force else [
         ("link", "install.step.link"),
         ("icons", "install.step.icons"),

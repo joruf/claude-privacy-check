@@ -1,0 +1,75 @@
+name: Executable
+
+# Builds the single-file executable with build-exe.py and publishes it as a
+# GitHub release, tag v<version>-build<build>, asset
+# claude-privacy-check-linux-<arch>-<version>-build<build>.
+#
+# Claude Privacy Check runs on Linux only (it reads /proc, uses pwd, systemd
+# --user and freedesktop menu entries), so there is one file, built on the
+# oldest supported Ubuntu.
+#
+# Runs when the version in claude_privacy_check/__init__.py changes, so every
+# build number gets one release; run it by hand to rebuild the current one.
+on:
+  push:
+    branches: [main]
+    paths: ["claude_privacy_check/__init__.py"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build on ubuntu-22.04
+    # The oldest supported Ubuntu: the file runs on every system with the same
+    # or a newer glibc, never on an older one.
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv python3-tk
+
+      # The system Python: it has the tkinter that was just installed.
+      - name: Build
+        run: /usr/bin/python3 build-exe.py
+
+      - name: Keep the executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: exe-linux
+          path: dist/claude-privacy-check-*
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Collect the executable
+        uses: actions/download-artifact@v4
+        with:
+          name: exe-linux
+          path: dist
+
+      - name: Create or refresh the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          read -r VERSION BUILD < <(python3 build-exe.py --print-version)
+          TAG="v${VERSION}-build${BUILD}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/claude-privacy-check-* --clobber
+          else
+            gh release create "$TAG" dist/claude-privacy-check-* \
+              --target "$GITHUB_SHA" \
+              --title "Claude Privacy Check ${VERSION} (${BUILD})" \
+              --notes "Single-file executable for Linux built by build-exe.py. Make the file executable (chmod +x) and start it. It does not install a menu entry; use the source checkout for that."
+          fi

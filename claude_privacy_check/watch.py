@@ -25,7 +25,10 @@ def entry_command():
     """How to invoke this tool from a unit file.
 
     Prefers the installed console script; falls back to run.py in a checkout.
+    The single-file executable (build-exe.py) is the command itself.
     """
+    if getattr(sys, "frozen", False):
+        return sys.executable
     script = shutil.which("claude-privacy-check")
     if script:
         return script
